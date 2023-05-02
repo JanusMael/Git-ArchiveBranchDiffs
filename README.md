@@ -52,7 +52,7 @@ sudo bash ./Git-ArchiveBranchDiffs.sh
   | `Added`    | `/leftBranch/NewFile.cs-added` (zero bytes)            | `/rightBranch/NewFile.cs` (new file, new content)            |
   | `Copied`   | `/leftBranch/OriginalFile.cs` (original content)       | `/rightBranch/OriginalFileCopied.cs` (original content copied) |
   | `Deleted`  | `/leftBranch/OriginalFile.cs` (original content)       | `/rightBranch/OriginalFile.cs-deleted` (zero bytes)          |
-  | `Modified` | `/leftBranch/ModifiedFile.cs` (original content)`      | `/rightBranch/ModifiedFile.cs` (modified content)            |
+  | `Modified` | `/leftBranch/ModifiedFile.cs` (original content)       | `/rightBranch/ModifiedFile.cs` (modified content)            |
   | `Renamed`  | `/leftBranch/RenameThisFile.cs-RXX` (original content) | `/rightBranch/RenamedFile.cs` (original file content, new file name) |
 
   - For `Rename` the `XX` represents the `Nth` occurrence of a rename within the changeset / commit
