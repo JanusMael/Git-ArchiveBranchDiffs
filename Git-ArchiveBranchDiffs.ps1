@@ -685,14 +685,14 @@ class DiffTokenFileInfo {
 			([GitDiffStatus]::Added)
 			{
 				$this.FilePath = $this.Diff.FilePath + "-added"
-				$this.ContentFilePath = $this.GetEmptyTempFile()
+				$this.ContentFilePath = [DiffTokenFileInfo]::GetEmptyTempFile()
 				$this.Comparand = [DiffComparand]::Left
 				break
 			}
 			([GitDiffStatus]::Deleted)
 			{
 				$this.FilePath = $this.Diff.OriginalFilePath + "-deleted"
-				$this.ContentFilePath = $this.GetEmptyTempFile()
+				$this.ContentFilePath = [DiffTokenFileInfo]::GetEmptyTempFile()
 				$this.Comparand = [DiffComparand]::Right
 				break
 			}
@@ -722,7 +722,7 @@ class DiffTokenFileInfo {
 	[string]$ContentFilePath
 	[DiffComparand]$Comparand
 
-	hidden [string] GetEmptyTempFile() {
+	hidden static [string] GetEmptyTempFile() {
 		[string]$tempFilePath = [System.IO.Path]::GetTempFileName() # Creates a uniquely named, zero-byte temporary file on disk
 		Set-Content -Path "$tempFilePath" -Value $([string]::Empty)
 		return $tempFilePath
@@ -820,6 +820,16 @@ class GitBranchDirectory {
 			Write-Fail "repoFilePath should not be null"
 		}
 		[string[]]$content = $this.Branch.GetFileContent($repoFilePath)
+
+		if($null -eq $content)
+		{
+			#this is usually because the file was deleted but not as part of the commit of the right-side
+			$content = @() #not null
+			[string]$missingFilePath = $repoFilePath + "-missing"
+
+			return [GitBranchDirectory]::WriteFileImpl($this.Directory.FullName, $missingFilePath, $content, $this.Branch.CommitDate)
+		}
+
 		return [GitBranchDirectory]::WriteFileImpl($this.Directory.FullName, $repoFilePath, $content, $this.Branch.CommitDate)
 	}
 
@@ -953,7 +963,7 @@ class GitDiffBranch {
 			}
 			
 			if($null -ne $diffFile.RightFile -and -not
-			  $diffFile.LeftFile.Equals($diffFile.RightFile))
+				$diffFile.RightFile.Equals($diffFile.LeftFile))
 			{
 				$diffFilePaths += $diffFile.RightFile.FullName
 			}
