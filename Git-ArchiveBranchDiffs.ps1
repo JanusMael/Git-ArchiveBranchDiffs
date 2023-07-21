@@ -740,14 +740,54 @@ class GitBranch {
 			Write-Fail "branchName should not be null"
 		}
 		$this.BranchName = $branchName
-		$this.CommitHash = [GitTool]::GetCommitHash($branchName)
+		$this.RemoteName = [GitTool]::GetRemoteName()
+		$this.ResolveLocalOrRemoteCommit($this.RemoteName, $this.BranchName)
 		$this.RemoteUrl = [GitTool]::GetRemoteUrl()
-		$this.CommitDate = [GitTool]::GetCommitDate($branchName)
+		$this.CommitDate = [GitTool]::GetCommitDate($this.BranchName)
 	}
 	[string]$BranchName
 	[string]$CommitHash
 	[System.DateTimeOffset]$CommitDate
+	[string]$RemoteName
 	[string]$RemoteUrl
+
+	hidden [void] ResolveLocalOrRemoteCommit([string]$remoteName, [string]$branchName) 
+	{
+		$this.CommitHash = [GitTool]::GetCommitHash($branchName)
+
+		if([string]::IsNullOrEmpty($this.CommitHash))
+		{
+			if($this.IsLocalBranch())
+			{
+				[string]$remoteBranch = $remoteName + "/" + $branchName
+				$this.CommitHash = git rev-parse $remoteBranch
+				if([string]::Equals($this.CommitHash, $remoteBranch))
+				{
+					$this.CommitHash = $null
+				}
+				else 
+				{
+					Write-Warn "Did not find local branch '$branchName' but will use remote branch '$remoteBranch'"
+					$this.BranchName = $remoteBranch
+				}
+			}
+			
+			if([string]::IsNullOrEmpty($this.CommitHash))
+			{
+				Write-Fail branch $this.BranchName not found, defaulting to 'HEAD'
+				$this.CommitHash = git rev-parse "HEAD"
+			}
+		}
+	}
+
+	[bool] IsLocalBranch() 
+	{
+		if($this.BranchName.StartsWith($this.RemoteName + "/"))
+		{
+			return $false
+		}
+		return $true
+	}
 
 	[string] GetDirectorySafeName() 
 	{
@@ -1125,7 +1165,7 @@ class GitTool {
 
 		if([string]::IsNullOrEmpty($commitHash))
 		{
-			$commitHash = "HEAD~1"
+			$commitHash = "HEAD~1" # previous commit
 		}
 
 		Write-Info Diffing $commitHash...
@@ -1209,11 +1249,27 @@ class GitTool {
 		}
 
 		[string]$remoteUrl = git config --get remote.origin.url
-        if([string]::IsNullOrEmpty($remoteUrl))
-        {
-            return $remoteUrl
-        }
+	        if([string]::IsNullOrEmpty($remoteUrl))
+	        {
+	            return $remoteUrl
+	        }
 		return $remoteUrl.Trim()
+	}
+
+	static [string] GetRemoteName()
+	{
+		if(-not (Get-Command -CommandType Application git -ErrorAction SilentlyContinue))
+		{
+			Write-Fail git not found
+			return ""
+		}
+
+		[string]$remoteName = git remote
+		if([string]::IsNullOrEmpty($remoteName))
+		{
+			return $remoteName
+		}
+		return $remoteName.Trim()
 	}
 
 	static [string] GetCommitHash([string]$branchName)
@@ -1230,13 +1286,7 @@ class GitTool {
 		[string]$commitHash = git rev-parse $branchName
 		if([string]::Equals($commitHash, $branchName))
 		{
-			Write-Fail branch $branchName not found, defaulting to 'HEAD~1'
-			#branchName needs become HEAD~1
 			$commitHash = $null
-		}
-		if([string]::IsNullOrEmpty($commitHash))
-		{
-			$commitHash = git rev-parse "HEAD~1"
 		}
 		return $commitHash
 	}
@@ -1308,6 +1358,11 @@ class GitTool {
 		return $false
 	}
 
+	static [bool] IsGitRoot([string]$directoryPath) 
+	{
+		return [System.IO.Directory]::Exists([System.IO.Path]::Combine($directoryPath, ".git"))
+	}
+
 	static [Void] Clean()
 	{
 		if(-not (Get-Command -CommandType Application git -ErrorAction SilentlyContinue))
@@ -1329,8 +1384,29 @@ Write-Info ""
 
 if([string]::IsNullOrEmpty($repositoryPath))
 {
-    $repositoryPath = Read-Prompt "Enter the path to the root of a `git` repository"
-	$repositoryPath = [System.IO.Path]::GetFullPath($repositoryPath)
+	[System.IO.DirectoryInfo]$currentDirectory = [System.IO.DirectoryInfo]::new($(Get-Location))
+	if([GitTool]::IsGitRoot($currentDirectory.FullName)) 
+	{
+		$useCurrentDirectory = Read-Prompt "Use '$currentDirectory' as the `git` repository root? (Y/N)"
+
+		if([string]::Equals($useCurrentDirectory, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or 
+		[string]::Equals($useCurrentDirectory, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+		{
+			$repositoryPath = [System.IO.Path]::GetFullPath($currentDirectory)
+		}
+	}
+
+	if([string]::IsNullOrEmpty($repositoryPath))
+	{
+		$repositoryPath = Read-Prompt "Enter the path to the root of a `git` repository"
+		$repositoryPath = [System.IO.Path]::GetFullPath($repositoryPath)
+	}
+}
+
+if(-not [GitTool]::IsGitRoot($repositoryPath))
+{
+	Write-Fail "'$repositoryPath' does not appear to be a `git` repository root."
+	Exit
 }
 
 if([string]::IsNullOrEmpty($leftBranch))
