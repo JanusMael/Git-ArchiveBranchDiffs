@@ -192,11 +192,11 @@ function CreateZipFromPathsImpl (
 	}
     $commandDirectory = [System.IO.DirectoryInfo]::new($commandPath)
 
-    if ([System.String]::IsNullOrEmpty($destinationPath))
+    if ([System.String]::IsNullOrWhiteSpace($destinationPath))
     {
         $destinationPath = $commandPath
     }
-    if ([System.String]::IsNullOrEmpty($archiveFileName))
+    if ([System.String]::IsNullOrWhiteSpace($archiveFileName))
     {
         $archiveFileName = $commandDirectory.Name + ".zip"
     }
@@ -231,7 +231,7 @@ function CreateZipFromPathsImpl (
         }
 
         $removePathRootLength = 0
-        if ([System.String]::IsNullOrEmpty($rootedPathToIgnore))
+        if ([System.String]::IsNullOrWhiteSpace($rootedPathToIgnore))
         {
             $removePathRootLength = [System.IO.Path]::GetPathRoot($fileInfo.FullName).Length
         }
@@ -283,15 +283,15 @@ function CreateZipImpl (
 	}
     $commandDirectory = [System.IO.DirectoryInfo]::new($commandPath)
 
-    if ([System.String]::IsNullOrEmpty($sourcePath))
+    if ([System.String]::IsNullOrWhiteSpace($sourcePath))
     {
         $sourcePath = $commandPath
     }
-    if ([System.String]::IsNullOrEmpty($destinationPath))
+    if ([System.String]::IsNullOrWhiteSpace($destinationPath))
     {
         $destinationPath = $commandPath
     }
-    if ([System.String]::IsNullOrEmpty($archiveFileName))
+    if ([System.String]::IsNullOrWhiteSpace($archiveFileName))
     {
         $archiveFileName = $commandDirectory.Name + ".zip"
     }
@@ -328,7 +328,7 @@ function CreateZipImpl (
 				$entryName = $fileInfo.FullName.Remove(0, $sourceDirectory.FullName.Length)
 			}
 
-			if([string]::IsNullOrEmpty($nestInDirectoryOverride) -eq $false)
+			if([string]::IsNullOrWhiteSpace($nestInDirectoryOverride) -eq $false)
 			{
 				$entryName = $nestInDirectoryOverride + $entryName;
 			}
@@ -381,7 +381,7 @@ function CreateZipImpl (
 					$entryName = $fileInfo.FullName.Remove(0, $sourceDirectory.FullName.Length)
 				}
 
-				if([string]::IsNullOrEmpty($nestInDirectoryOverride) -eq $false)
+				if([string]::IsNullOrWhiteSpace($nestInDirectoryOverride) -eq $false)
 				{
 					$entryName = $nestInDirectoryOverride + [System.IO.Path]::DirectorySeparatorChar + $entryName;
 				}
@@ -514,7 +514,7 @@ function Get-SharedPath {
 
     $sharedPath = [System.IO.Path]::Combine($sharedRootParts)
 
-    if([string]::IsNullOrEmpty($sharedPath))
+    if([string]::IsNullOrWhiteSpace($sharedPath))
     {
         return $null
     }
@@ -639,7 +639,7 @@ class GitDiff {
 	static [string]$BranchDiffSeparator = " ⟷ "
 
 	static [GitDiff]Parse([string]$diffRaw) {
-		if([string]::IsNullOrEmpty($diffRaw)) {
+		if([string]::IsNullOrWhiteSpace($diffRaw)) {
 			Write-Fail "diffRaw should not be null"
 		}
 		[GitDiff]$result = $null
@@ -736,7 +736,7 @@ class DiffTokenFileInfo {
 <# model of git branch attributes #>
 class GitBranch {
 	GitBranch([string]$branchName) {
-		if([string]::IsNullOrEmpty($branchName)) {
+		if([string]::IsNullOrWhiteSpace($branchName)) {
 			Write-Fail "branchName should not be null"
 		}
 		$this.BranchName = $branchName
@@ -755,7 +755,7 @@ class GitBranch {
 	{
 		$this.CommitHash = [GitTool]::GetCommitHash($branchName)
 
-		if([string]::IsNullOrEmpty($this.CommitHash))
+		if([string]::IsNullOrWhiteSpace($this.CommitHash))
 		{
 			if($this.IsLocalBranch())
 			{
@@ -772,7 +772,7 @@ class GitBranch {
 				}
 			}
 			
-			if([string]::IsNullOrEmpty($this.CommitHash))
+			if([string]::IsNullOrWhiteSpace($this.CommitHash))
 			{
 				Write-Fail branch $this.BranchName not found, defaulting to 'HEAD'
 				$this.CommitHash = git rev-parse "HEAD"
@@ -881,7 +881,7 @@ class GitBranchDirectory {
 		[string[]]$content = @()
 		if([System.IO.Path]::IsPathRooted($tokenFileInfo.ContentFilePath)) 
 		{
-			$content = [System.IO.File]::ReadAllLines($tokenFileInfo.ContentFilePath)
+			$content = [System.IO.File]::ReadAllLines($tokenFileInfo.ContentFilePath, [System.Text.Encoding]::UTF8)
 		}
 		else
 		{
@@ -893,11 +893,11 @@ class GitBranchDirectory {
 
 	hidden static [System.IO.FileInfo] WriteFileImpl([string]$directoryPath, [string]$relativeFilePath, [string[]]$content, [System.DateTimeOffset]$commitDate) 
 	{
-		if([string]::IsNullOrEmpty($directoryPath))
+		if([string]::IsNullOrWhiteSpace($directoryPath))
 		{
 			return $null
 		}
-		if([string]::IsNullOrEmpty($relativeFilePath))
+		if([string]::IsNullOrWhiteSpace($relativeFilePath))
 		{
 			return $null
 		}
@@ -1009,7 +1009,7 @@ class GitDiffBranch {
 			}
 		}
 
-		if([string]::IsNullOrEmpty($archiveFileName)) 
+		if([string]::IsNullOrWhiteSpace($archiveFileName)) 
 		{
 			[string]$leftName = $this.LeftBranch.Directory.Name
 			[string]$rightName = $this.RightBranch.Directory.Name
@@ -1101,7 +1101,7 @@ class GitDiffBranch {
 				([DiffComparand]::Manifest)
 				{
 					[string]$manifestFilePath = [System.IO.Path]::Combine($this.RootDirectory.FullName, $diff.TokenFileInfo.FilePath)
-					[string[]]$content = [System.IO.File]::ReadAllLines($diff.TokenFileInfo.ContentFilePath)
+					[string[]]$content = [System.IO.File]::ReadAllLines($diff.TokenFileInfo.ContentFilePath, [System.Text.Encoding]::UTF8)
 					if($(Get-ExtensionEquals $diff.TokenFileInfo.ContentFilePath ".manifest"))
 					{
 						[string]$leftName = $this.LeftBranch.Directory.Name
@@ -1163,14 +1163,14 @@ class GitTool {
 			return $diffs
 		}
 
-		if([string]::IsNullOrEmpty($commitHash))
+		if([string]::IsNullOrWhiteSpace($commitHash))
 		{
 			$commitHash = "HEAD~1" # previous commit
 		}
 
 		Write-Info Diffing $commitHash...
 		[object[]]$diffsRawArray = @()
-		if([string]::IsNullOrEmpty($changesCommitHash))
+		if([string]::IsNullOrWhiteSpace($changesCommitHash))
 		{
 			$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status --merge-base $commitHash
 		}
@@ -1249,7 +1249,7 @@ class GitTool {
 		}
 
 		[string]$remoteUrl = git config --get remote.origin.url
-	        if([string]::IsNullOrEmpty($remoteUrl))
+	        if([string]::IsNullOrWhiteSpace($remoteUrl))
 	        {
 	            return $remoteUrl
 	        }
@@ -1265,11 +1265,27 @@ class GitTool {
 		}
 
 		[string]$remoteName = git remote
-		if([string]::IsNullOrEmpty($remoteName))
+		if([string]::IsNullOrWhiteSpace($remoteName))
 		{
 			return $remoteName
 		}
 		return $remoteName.Trim()
+	}
+
+	static [string] GetDefaultRemoteBranch()
+	{
+		if(-not (Get-Command -CommandType Application git -ErrorAction SilentlyContinue))
+		{
+			Write-Fail git not found
+			return ""
+		}
+		[string]$remoteName = [GitTool]::GetRemoteName()
+		[string]$defaultBranch = git symbolic-ref refs/remotes/$remoteName/HEAD --short
+		if([string]::IsNullOrWhiteSpace($defaultBranch))
+		{
+			return $defaultBranch
+		}
+		return $defaultBranch.Trim()
 	}
 
 	static [string] GetCommitHash([string]$branchName)
@@ -1279,7 +1295,7 @@ class GitTool {
 			Write-Fail git not found
 			return ""
 		}
-		if([string]::IsNullOrEmpty($branchName)) {
+		if([string]::IsNullOrWhiteSpace($branchName)) {
 			Write-Fail "branchName should not be null"
 		}
 
@@ -1293,7 +1309,7 @@ class GitTool {
 
 	static [System.DateTimeOffset] GetCommitDate([string]$branchName) 
 	{
-		if([string]::IsNullOrEmpty($branchName)) {
+		if([string]::IsNullOrWhiteSpace($branchName)) {
 			Write-Fail "branchName should not be null"
 		}
 		#%ci is 'commit date' + 'iso'
@@ -1317,7 +1333,11 @@ class GitTool {
 		}
 
 		[string]$showFile = $($branchOrRevision + ":" + $repoFilePath)
-		[string[]]$showResult = git --no-pager show $showFile
+		
+		[string]$showResultFile = [DiffTokenFileInfo]::GetEmptyTempFile()
+		git --no-pager show $showFile > $showResultFile
+
+		[string[]]$showResult = [System.IO.File]::ReadAllLines($showResultFile, [System.Text.Encoding]::UTF8)
 		if($null -ne $showResult -and $showResult.Length -gt 0 -and $null -ne $showResult[0])
 		{
 			#remove BOM
@@ -1379,13 +1399,17 @@ class GitTool {
 	}
 }
 
+[System.IO.DirectoryInfo]$currentDirectory = [System.IO.DirectoryInfo]::new($(Get-Location))
+[Environment]::CurrentDirectory = $currentDirectory.FullName
+
 Write-Info Lets create an archive of delta between two branches...
 Write-Info ""
 
-if([string]::IsNullOrEmpty($repositoryPath))
+if([string]::IsNullOrWhiteSpace($repositoryPath))
 {
-	[System.IO.DirectoryInfo]$currentDirectory = [System.IO.DirectoryInfo]::new($(Get-Location))
-	if([GitTool]::IsGitRoot($currentDirectory.FullName)) 
+	
+	if(-not [string]::Equals($currentDirectory.FullName, $PSScriptRoot, [System.StringComparison]::InvariantCultureIgnoreCase) -and
+	   [GitTool]::IsGitRoot($currentDirectory.FullName)) 
 	{
 		$useCurrentDirectory = Read-Prompt "Use '$currentDirectory' as the `git` repository root? (Y/N)"
 
@@ -1396,7 +1420,7 @@ if([string]::IsNullOrEmpty($repositoryPath))
 		}
 	}
 
-	if([string]::IsNullOrEmpty($repositoryPath))
+	if([string]::IsNullOrWhiteSpace($repositoryPath))
 	{
 		$repositoryPath = Read-Prompt "Enter the path to the root of a `git` repository"
 		$repositoryPath = [System.IO.Path]::GetFullPath($repositoryPath)
@@ -1409,23 +1433,39 @@ if(-not [GitTool]::IsGitRoot($repositoryPath))
 	Exit
 }
 
-if([string]::IsNullOrEmpty($leftBranch))
+Push-Location -Path $repositoryPath
+
+if([string]::IsNullOrWhiteSpace($leftBranch))
 {
-    $leftBranch = Read-Prompt "Enter the name of the LEFT branch for comparison"
+	[string]$defaultBranch = [GitTool]::GetDefaultRemoteBranch()
+
+	$useDefaultBranch = Read-Prompt "Use '$defaultBranch' as LEFT branch for comparison? (Y/N)"
+
+	if([string]::Equals($useDefaultBranch, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or 
+	[string]::Equals($useDefaultBranch, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+	{
+		$leftBranch = $defaultBranch
+	}
+	else
+	{
+		$leftBranch = Read-Prompt "Enter the name of the LEFT branch for comparison"
+	}
 }
 
-if([string]::IsNullOrEmpty($rightBranch))
+Pop-Location
+
+if([string]::IsNullOrWhiteSpace($rightBranch))
 {
     $rightBranch = Read-Prompt "Enter the name of the RIGHT branch for comparison"
 }
 
-if([string]::IsNullOrEmpty($outputDirectory))
+if([string]::IsNullOrWhiteSpace($outputDirectory))
 {
     $outputDirectory = Read-Prompt "Enter the path where the ZIP will be created"
 	$outputDirectory = [System.IO.Path]::GetFullPath($outputDirectory)
 }
 
-if([string]::IsNullOrEmpty($archiveFileName))
+if([string]::IsNullOrWhiteSpace($archiveFileName))
 {
     $specifyArchiveName = Read-Prompt "Do you want to name the ZIP file? (Y/N)"
 
