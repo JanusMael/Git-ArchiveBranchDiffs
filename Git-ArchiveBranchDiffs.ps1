@@ -59,7 +59,7 @@ Function Write-Fail {
 Function Read-Prompt {
     [OutputType([string])]
     Param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(ValueFromPipeline = $true, Mandatory=$true)]
         [string]
         $prompt
     )
@@ -94,13 +94,16 @@ function CopyBinaryStream (
 }
 
 function TakeOwn(
-
-    [Parameter(Mandatory=$true)]
+    [Parameter(ValueFromPipeline = $true, Mandatory=$true)]
     [System.IO.FileSystemInfo]$fileSystemInfo
 )
 {
+	[string]$userName = [System.Environment]::GetEnvironmentVariable("USERNAME")
     [string]$fullPath = """" + $fileSystemInfo.FullName + """"
-    Start-Process -FilePath takeown.exe -ArgumentList ("/F $fullPath") -Verb runas | Out-Null
+	# takeown /F %1 /R
+    Start-Process -FilePath takeown.exe -ArgumentList ("/F $fullPath /R") -Verb runas | Out-Null
+	# icacls %1 /grant %USERNAME%:(OI)(CI)F /T
+	Start-Process -FilePath icacls.exe -ArgumentList ("$fullPath /grant $userName\:(OI)(CI)F /T") -Verb runas | Out-Null
 }
 
 function AddFileInfoToZipArchive(
@@ -436,34 +439,60 @@ function CreateDirectoryListingArchive (
 }
 
 function Unzip(
+	[parameter(Mandatory=$true)]
     [string]$sourceArchivePath,
+	[parameter(Mandatory=$true)]
     [string]$destinationPath
 ) {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($sourceArchivePath, $destinationPath)
 }
 
-function Convert-NewlinesToUnix([string] $fileName) {
-    (Get-Content $fileName).Replace("`r`n", "`n") | Out-File $fileName -Encoding ascii
+function Convert-NewlinesToUnix(
+	[parameter(ValueFromPipeline = $true, Mandatory=$true)]
+	[string] $fileName) 
+{
+    (Get-Content $fileName).Replace("`r`n", "`n") | Out-File $fileName -Encoding utf8
     return
 }
 
 
-function Convert-NewlinesToWindows([string] $fileName) {
-    (Get-Content $fileName).Replace("`n", "`r`n") | Out-File $fileName -Encoding ascii
+function Convert-NewlinesToWindows(
+	[parameter(ValueFromPipeline = $true, Mandatory=$true)]
+	[string] $fileName) 
+{
+    (Get-Content $fileName).Replace("`n", "`r`n") | Out-File $fileName -Encoding utf8
     return
 }
 
-function Get-Temp-SubDirectory([string] $subDirectory) {
+function Get-Temp-SubDirectory {
+    [OutputType([System.IO.DirectoryInfo])]
+    Param (
+        [parameter(ValueFromPipeline = $true, Mandatory=$true)]
+        [string]
+        $subDirectory
+    )
     [System.IO.DirectoryInfo]$tempDirectory = [System.IO.DirectoryInfo]::new([System.IO.Path]::GetTempPath())
     [System.IO.DirectoryInfo]$tempSubDirectory = $tempDirectory.CreateSubdirectory($subDirectory)
     return $tempSubDirectory
 }
 
-function Get-IsDirectory([System.IO.FileSystemInfo]$fileSystemInfo) {
+function Get-IsDirectory {
+	[OutputType([bool])]
+	Param (
+        [parameter(ValueFromPipeline = $true, Mandatory=$true)]	
+        [System.IO.FileSystemInfo]
+		$fileSystemInfo
+    )
     return $null -ne $fileSystemInfo -and ($fileSystemInfo.GetType().IsAssignableFrom([System.IO.DirectoryInfo]))
 }
 
-function Get-ParentDirectory([System.IO.FileSystemInfo]$fileSystemInfo) {
+function Get-ParentDirectory {
+	[OutputType([System.IO.DirectoryInfo])]
+	Param (
+        [parameter(ValueFromPipeline = $true, Mandatory=$true)]
+        [System.IO.FileSystemInfo]
+		$fileSystemInfo
+    )
     if($(Get-IsDirectory $fileSystemInfo))
     {
         return ([System.IO.DirectoryInfo]$fileSystemInfo).Parent
@@ -477,7 +506,7 @@ function Get-ParentDirectory([System.IO.FileSystemInfo]$fileSystemInfo) {
 function Get-PathParts {
     [OutputType([System.Collections.Generic.IEnumerable[string]])]
     Param (
-        [parameter(Mandatory=$true)]
+        [parameter(ValueFromPipeline = $true, Mandatory=$true)]
         [System.IO.FileSystemInfo]
         $fileSystemInfo
     )
@@ -532,7 +561,7 @@ function Get-UniqueName {
 function Get-DateTimeAndZone {
     [OutputType([string])]
     Param (
-        [parameter(Mandatory=$true)]
+        [parameter(ValueFromPipeline = $true, Mandatory=$true)]
         [System.DateTimeOffset]
         $dateTimeOffset
     )
@@ -562,6 +591,50 @@ function Get-ExtensionEquals {
 }
 
 #endregion  IO / zip functions
+
+<# model of file-placeholders representing additions, deletions, renames, and manifest #>
+class TempDirectoryScope {
+	TempDirectoryScope([string]$subDirectory) 
+	{
+		if([string]::IsNullOrWhiteSpace($subDirectory)) {
+			$this.Directory = Get-UniqueName | Get-Temp-SubDirectory
+		}
+		else {
+			$this.Directory = Get-Temp-SubDirectory $subDirectory
+		}
+	}
+	[System.IO.DirectoryInfo]$Directory
+
+	[string] GetTempPath() {
+		return $this.Directory.FullName
+	}
+
+	[System.IO.DirectoryInfo] GetSubDirectory([string]$directoryName) {
+		
+		if([string]::IsNullOrWhiteSpace($directoryName)) {
+			$directoryName = Get-UniqueName
+		}
+		[System.IO.DirectoryInfo]$subDirectory = [System.IO.Path]::Combine($this.Directory.FullName, $directoryName)
+		return $subDirectory;
+	}
+	
+	[string] GetEmptyTempFile() {
+		[string]$fileName = Get-UniqueName
+		[string]$tempFilePath = [System.IO.Path]::Combine($this.Directory.FullName, $fileName)
+		Set-Content -Path "$tempFilePath" -Value $([string]::Empty)
+		return $tempFilePath
+	}
+
+	[void] Cleanup() {
+		$this.Directory.Delete($true)
+	}
+	
+	[string] ToString() {
+		return $this.Directory.FullName
+	}
+}
+
+[TempDirectoryScope]$script:Temp = [TempDirectoryScope]::new($null)
 
 #region Enums
 <# Git Cherry Pick types #>
@@ -685,14 +758,14 @@ class DiffTokenFileInfo {
 			([GitDiffStatus]::Added)
 			{
 				$this.FilePath = $this.Diff.FilePath + "-added"
-				$this.ContentFilePath = [DiffTokenFileInfo]::GetEmptyTempFile()
+				$this.ContentFilePath = $script:Temp.GetEmptyTempFile()
 				$this.Comparand = [DiffComparand]::Left
 				break
 			}
 			([GitDiffStatus]::Deleted)
 			{
 				$this.FilePath = $this.Diff.OriginalFilePath + "-deleted"
-				$this.ContentFilePath = [DiffTokenFileInfo]::GetEmptyTempFile()
+				$this.ContentFilePath = $script:Temp.GetEmptyTempFile()
 				$this.Comparand = [DiffComparand]::Right
 				break
 			}
@@ -721,12 +794,6 @@ class DiffTokenFileInfo {
 	[string]$FilePath
 	[string]$ContentFilePath
 	[DiffComparand]$Comparand
-
-	hidden static [string] GetEmptyTempFile() {
-		[string]$tempFilePath = [System.IO.Path]::GetTempFileName() # Creates a uniquely named, zero-byte temporary file on disk
-		Set-Content -Path "$tempFilePath" -Value $([string]::Empty)
-		return $tempFilePath
-	}
 	
 	[string] ToString() {
 		return $this.Diff.ToString() + ": " + $this.FilePath.ToString() + " (" + $this.ContentFilePath.ToString() + ")"
@@ -794,7 +861,7 @@ class GitBranch {
 		return $this.BranchName.Replace("\\","_").Replace("/", "_")
 	}
 
-	[string[]] GetFileContent([string]$repoFilePath)
+	[byte[]] GetFileContent([string]$repoFilePath)
 	{
 		return [GitTool]::GetFileContent($this.BranchName, $repoFilePath)
 	}
@@ -859,7 +926,7 @@ class GitBranchDirectory {
 		if($null -eq $repoFilePath) {
 			Write-Fail "repoFilePath should not be null"
 		}
-		[string[]]$content = $this.Branch.GetFileContent($repoFilePath)
+		[byte[]]$content = $this.Branch.GetFileContent($repoFilePath)
 
 		if($null -eq $content)
 		{
@@ -881,7 +948,7 @@ class GitBranchDirectory {
 		[string[]]$content = @()
 		if([System.IO.Path]::IsPathRooted($tokenFileInfo.ContentFilePath)) 
 		{
-			$content = [System.IO.File]::ReadAllLines($tokenFileInfo.ContentFilePath, [System.Text.Encoding]::UTF8)
+			$content = [System.IO.File]::ReadAllBytes($tokenFileInfo.ContentFilePath)
 		}
 		else
 		{
@@ -891,7 +958,7 @@ class GitBranchDirectory {
 		return [GitBranchDirectory]::WriteFileImpl($this.Directory.FullName, $tokenFileInfo.FilePath, $content, $this.Branch.CommitDate)
 	}
 
-	hidden static [System.IO.FileInfo] WriteFileImpl([string]$directoryPath, [string]$relativeFilePath, [string[]]$content, [System.DateTimeOffset]$commitDate) 
+	hidden static [System.IO.FileInfo] WriteFileImpl([string]$directoryPath, [string]$relativeFilePath, [byte[]]$content, [System.DateTimeOffset]$commitDate) 
 	{
 		if([string]::IsNullOrWhiteSpace($directoryPath))
 		{
@@ -926,7 +993,7 @@ class GitBranchDirectory {
 				$containingDirectory.LastWriteTime = $commitDate.DateTime
 			}
 			try {
-				[System.IO.File]::WriteAllLines($fileInfo.FullName, $content, [System.Text.Encoding]::UTF8)
+				[System.IO.File]::WriteAllBytes($fileInfo.FullName, $content)
 				$fileInfo.CreationTime = $commitDate.DateTime
 				$fileInfo.LastAccessTime = $commitDate.DateTime
 				$fileInfo.LastWriteTime = $commitDate.DateTime
@@ -964,8 +1031,7 @@ class GitDiffBranch {
 		if($null -eq $rightBranch) {
 			Write-Fail "rightBranch should not be null"
 		}
-		[string]$uniqueName = Get-UniqueName
-		$this.RootDirectory = Get-Temp-SubDirectory $uniqueName
+		$this.RootDirectory = $script:Temp.GetSubDirectory($null)
 
 		$this.LeftBranch = [GitBranchDirectory]::new($this.RootDirectory, $leftBranch, $this.RootDirectory.CreateSubdirectory($leftBranch.GetDirectorySafeName()))
 		$this.RightBranch = [GitBranchDirectory]::new($this.RootDirectory, $rightBranch, $this.RootDirectory.CreateSubdirectory($rightBranch.GetDirectorySafeName()))
@@ -985,6 +1051,9 @@ class GitDiffBranch {
 	{
 		if($null -eq $outputDirectory) {
 			Write-Fail "outputDirectory should not be null"
+		}
+		if(-not $outputDirectory.Exists) {
+			$outputDirectory.Create()	
 		}
 		[GitDiffFile[]]$diffFiles = $this.WriteDiffFiles()
 
@@ -1052,7 +1121,7 @@ class GitDiffBranch {
 
 		[string]$leftName = $this.LeftBranch.Directory.Name
 		[string]$rightName = $this.RightBranch.Directory.Name
-		[string]$argumentsFilePath = $([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "Δ $leftName$([GitDiff]::BranchDiffSeparator)$rightName"))
+		[string]$argumentsFilePath = $([System.IO.Path]::Combine($script:Temp.GetTempPath(), "Δ $leftName$([GitDiff]::BranchDiffSeparator)$rightName"))
 		Set-Content -Path "$argumentsFilePath" -Value "$leftName $rightName"
 		[GitDiff]$argumentsDiff = [GitDiff]::new([GitDiffStatusRaw]::X, $null, $argumentsFilePath)
 		$diffs += $argumentsDiff
@@ -1206,7 +1275,7 @@ class GitTool {
 		$manifestRawArray += [string]::Empty
 		$manifestRawArray += $diffsRawArray
 
-		[string]$manifestFilePath = $([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "commit# " + $($commitHash + ".manifest")))
+		[string]$manifestFilePath = $([System.IO.Path]::Combine($script:Temp.GetTempPath(), "commit# " + $($commitHash + ".manifest")))
 		Set-Content -Path $manifestFilePath -Value $manifestRawArray
 		[GitDiff]$manifestDiff = [GitDiff]::new([GitDiffStatusRaw]::X, $null, $manifestFilePath)
 		
@@ -1288,6 +1357,21 @@ class GitTool {
 		return $defaultBranch.Trim()
 	}
 
+	static [string] GetCurrentBranch() 
+	{
+		if(-not (Get-Command -CommandType Application git -ErrorAction SilentlyContinue))
+		{
+			Write-Fail git not found
+			return ""
+		}
+		[string]$currentBranch = git branch --show-current
+		if([string]::IsNullOrWhiteSpace($currentBranch))
+		{
+			return $currentBranch
+		}
+		return $currentBranch.Trim()
+	}
+
 	static [string] GetCommitHash([string]$branchName)
 	{
 		if(-not (Get-Command -CommandType Application git -ErrorAction SilentlyContinue))
@@ -1317,7 +1401,7 @@ class GitTool {
 		return [System.DateTimeOffset]::Parse($commitDateRaw)
 	}
 
-	static [string[]] GetFileContent([string]$branchOrRevision, [string]$repoFilePath) 
+	static [byte[]] GetFileContent([string]$branchOrRevision, [string]$repoFilePath) 
 	{
 		if($null -eq $branchOrRevision) {
 			Write-Fail "branchOrRevision should not be null"
@@ -1334,19 +1418,18 @@ class GitTool {
 
 		[string]$showFile = $($branchOrRevision + ":" + $repoFilePath)
 		
-		[string]$showResultFile = [DiffTokenFileInfo]::GetEmptyTempFile()
-		git --no-pager show $showFile > $showResultFile
+		[string]$showResultFilePath = $script:Temp.GetEmptyTempFile()
+		git --no-pager show $showFile > $showResultFilePath
 
-		[string[]]$showResult = [System.IO.File]::ReadAllLines($showResultFile, [System.Text.Encoding]::UTF8)
-		if($null -ne $showResult -and $showResult.Length -gt 0 -and $null -ne $showResult[0])
-		{
-			#remove BOM
-			$showResult[0] = $showResult[0].TrimStart("∩╗┐")
-		}
-		else 
+		[System.IO.FileInfo]$showResultFile = [System.IO.FileInfo]::new($showResultFilePath)
+
+		if($null -eq $showResultFile -or 0 -eq $showResultFile.Length)
 		{
 			Write-Warn "No file content found for $branchOrRevision/$repoFilePath"
+			return @()
 		}
+
+		[byte[]]$showResult = [System.IO.File]::ReadAllBytes($showResultFilePath)
 		return $showResult
 	}
 
@@ -1366,12 +1449,12 @@ class GitTool {
 			$directoryRoot.Create()
 		}
 
-		[string[]]$content = [GitTool]::GetFileContent($branchOrRevision, $repoFilePath)
+		[byte[]]$content = [GitTool]::GetFileContent($branchOrRevision, $repoFilePath)
 
 		if($null -ne $content -and $content.Length -gt 0) 
 		{
 			[System.IO.FileInfo]$filePath = [System.IO.Path]::Combine($directoryRoot.FullName, $repoFilePath)
-			[System.IO.File]::WriteAllLines($filePath, $content, [System.Text.Encoding]::UTF8)
+			[System.IO.File]::WriteAllBytes($filePath, $content)
 			return $true
 		}
 		
@@ -1456,7 +1539,19 @@ Pop-Location
 
 if([string]::IsNullOrWhiteSpace($rightBranch))
 {
-    $rightBranch = Read-Prompt "Enter the name of the RIGHT branch for comparison"
+	[string]$currentBranch = [GitTool]::GetCurrentBranch()
+
+	$useCurrentBranch = Read-Prompt "Use '$currentBranch' as RIGHT branch for comparison? (Y/N)"
+
+	if([string]::Equals($useCurrentBranch, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or 
+	[string]::Equals($useCurrentBranch, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+	{
+		$rightBranch = $currentBranch
+	}
+	else
+	{
+		$rightBranch = Read-Prompt "Enter the name of the RIGHT branch for comparison"
+	}
 }
 
 if([string]::IsNullOrWhiteSpace($outputDirectory))
@@ -1480,4 +1575,8 @@ Push-Location -Path $repositoryPath
 
 [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
 
+$script:Temp.Cleanup()
+$script:Temp = $null
+
 Pop-Location
+#😺
