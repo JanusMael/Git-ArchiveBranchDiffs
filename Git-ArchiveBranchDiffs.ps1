@@ -98,12 +98,12 @@ function TakeOwn(
     [System.IO.FileSystemInfo]$fileSystemInfo
 )
 {
-	[string]$userName = [System.Environment]::GetEnvironmentVariable("USERNAME")
+    [string]$userName = [System.Environment]::GetEnvironmentVariable("USERNAME")
     [string]$fullPath = """" + $fileSystemInfo.FullName + """"
-	# takeown /F %1 /R
+    # takeown /F %1 /R
     Start-Process -FilePath takeown.exe -ArgumentList ("/F $fullPath /R") -Verb runas | Out-Null
-	# icacls %1 /grant %USERNAME%:(OI)(CI)F /T
-	Start-Process -FilePath icacls.exe -ArgumentList ("$fullPath /grant $userName\:(OI)(CI)F /T") -Verb runas | Out-Null
+    # icacls %1 /grant %USERNAME%:(OI)(CI)F /T
+    Start-Process -FilePath icacls.exe -ArgumentList ("$fullPath /grant $userName\:(OI)(CI)F /T") -Verb runas | Out-Null
 }
 
 function AddFileInfoToZipArchive(
@@ -268,10 +268,10 @@ function CreateZipImpl (
     [string]$searchPatternMask = "*",
     #[Parameter(Mandatory=$false)]
     [string[]]$exclusions = $null,
-	#[Parameter(Mandatory=$false)]
-	[boolean]$includeParentDirectoryName = $false,
-	#[Parameter(Mandatory=$false)]
-	[string]$nestInDirectoryOverride = ""
+    #[Parameter(Mandatory=$false)]
+    [boolean]$includeParentDirectoryName = $false,
+    #[Parameter(Mandatory=$false)]
+    [string]$nestInDirectoryOverride = ""
     )
 {
     $ErrorActionPreference = "stop" # you can opt to stagger on, bleeding, if an error occurs
@@ -439,9 +439,9 @@ function CreateDirectoryListingArchive (
 }
 
 function Unzip(
-	[parameter(Mandatory=$true)]
+    [parameter(Mandatory=$true)]
     [string]$sourceArchivePath,
-	[parameter(Mandatory=$true)]
+    [parameter(Mandatory=$true)]
     [string]$destinationPath
 ) {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($sourceArchivePath, $destinationPath)
@@ -592,7 +592,6 @@ function Get-ExtensionEquals {
 
 #endregion  IO / zip functions
 
-<# model of file-placeholders representing additions, deletions, renames, and manifest #>
 class TempDirectoryScope {
 	TempDirectoryScope([string]$subDirectory) 
 	{
@@ -1386,8 +1385,12 @@ class GitTool {
 		[string]$commitHash = git rev-parse $branchName
 		if([string]::Equals($commitHash, $branchName))
 		{
-			$commitHash = $null
+			if(-not [GitTool]::IsPossibleCommitHash($commitHash)) 
+			{
+				$commitHash = $null
+			}
 		}
+
 		return $commitHash
 	}
 
@@ -1400,6 +1403,17 @@ class GitTool {
 		[string]$commitDateRaw = git log -n 1 --pretty="format:%ci" $branchName
 		return [System.DateTimeOffset]::Parse($commitDateRaw)
 	}
+
+	static [bool] IsPossibleCommitHash([string]$branchOrHash) {
+	        # The regex checks for a string that is between 4 and 40 characters long,
+	        # contains only hexadecimal characters (0-9, a-f)
+	        if ($branchOrHash -match '^[a-f0-9]{4,40}$') {
+	            return $true
+	        }
+	        else {
+	            return $false
+	        }
+    	}
 
 	static [byte[]] GetFileContent([string]$branchOrRevision, [string]$repoFilePath) 
 	{
