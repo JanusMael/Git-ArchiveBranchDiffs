@@ -1,73 +1,206 @@
 # Git-ArchiveBranchDiffs
 
-A tool for `git` repositories that creates a `ZIP` archive containing JUST the files representing the diff/delta between two related branches.  This is similar to what `GitHub` provides in the changes view for `pull request`/`PR` reviews.  Notably this tool supports comparing ANY TWO related branches and produces a self-contained archive which can be used offline and which DOES NOT require a `PR` to be created at all.
+Create a self-contained ZIP archive of just the files that differ between two git branches — perfect for offline code review without needing a pull request.
 
-> NOTE you must have `git` on your `PATH` when using this tool
+- **No PR required** — compare any two related branches
+- **Offline review** — extract the archive and use your favorite diff tool
+- **Cross-platform** — runs on Windows, Linux, and macOS
+- **Binary-safe** — handles text and binary files without corruption
+- **Tab completion** — branch names and repo paths auto-complete in PowerShell
 
-### Usage
+---
 
-#### If [PowerShell Core](https://github.com/PowerShell/PowerShell) is already installed or can be installed:
+## Table of Contents
 
-Execute the `.ps1` file via `pwsh` and respond to the prompts for input parameters:
+- [Quick Start](#quick-start)
+- [Parameters](#parameters)
+- [Non-Interactive Mode](#non-interactive-mode)
+- [Output Format](#output-format)
+- [Placeholder Files](#placeholder-files)
+- [Tab Completion](#tab-completion)
+- [Diff Tool Recommendations](#diff-tool-recommendations)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
-```shell
+---
+
+## Quick Start
+
+> **Prerequisite**: `git` must be on your `PATH`
+
+### Windows (PowerShell)
+
+```powershell
+# Interactive — prompts for each input
 pwsh ./Git-ArchiveBranchDiffs.ps1
+
+# With parameters
+pwsh ./Git-ArchiveBranchDiffs.ps1 -repositoryPath "C:\repos\myRepo" -leftBranch main -rightBranch feature/my-branch -outputDirectory "C:\output"
+
+# Non-interactive — uses smart defaults
+pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive
 ```
 
-Execute the `.ps1` file from an existing `PowerShell` and supply one or more of the parameters, respond to prompts for the remainder:
+### Linux / macOS (Bash)
 
-```shell
-PS> ./Git-ArchiveBranchDiffs.ps1 -repositoryPath /c/myRepo -leftBranch master -rightBranch f/myBranch -outputDirectory /tmp
-```
+If PowerShell Core is not installed, the bash wrapper will download and install it automatically:
 
-#### If [Bash](https://en.wikipedia.org/wiki/Bash_(Unix_shell)) is installed and [PowerShell Core](https://github.com/PowerShell/PowerShell) is not installed:
-
-Execute the `.sh` file via `bash`, `PowerShell` will be downloaded and will execute the `.ps1` file, then respond to the prompts for input parameters:
-
-```shell
-sudo chmod +x ./Git-ArchiveBranchDiffs.sh
+```bash
+chmod +x ./Git-ArchiveBranchDiffs.sh
 sudo bash ./Git-ArchiveBranchDiffs.sh
 ```
 
-### Input Parameters
+Or if `pwsh` is already installed:
 
-| Parameter Name    | Description                                                  |
-| ----------------- | ------------------------------------------------------------ |
-| `repositoryPath`  | Specifies directory path to the root of a `git` repository   |
-| `leftBranch`      | Specifies the name of the branch to be the left-side of a diff comparison |
-| `rightBranch`     | Specifies the name of the branch to be the right-side of a diff comparison |
-| `outputDirectory` | Specifies the directory path where the `ZIP` file will be created |
-| `archiveFileName` | [*Optional*] Specifies the name of the `ZIP` file that will be created |
+```bash
+pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive
+```
 
-### Features
+---
 
-- No `pull request`/`PR` needs to exist to review the changes between two branches the same way you would normally review a `pull request` on `GitHub`
+## Parameters
 
-- Files participating in the `branch diff` are pulled from either `remote blobs` or from the relevant `local-only change(s)` as appropriate
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `-repositoryPath` | No | Current directory (interactive) or auto-detected | Path to the root of a git repository |
+| `-leftBranch` | No | Default remote branch (e.g., `origin/main`) | Branch for the left side of the diff |
+| `-rightBranch` | No | Currently checked-out branch | Branch for the right side of the diff |
+| `-outputDirectory` | No | Prompted (interactive) or current directory | Where the ZIP file will be created |
+| `-archiveFileName` | No | Auto-generated from branch names | Custom name for the ZIP file |
+| `-nonInteractive` | No | `$false` | Skip all prompts and use smart defaults |
 
-- `Placeholder Files` are included in the output to ensure both left/right sides of the diff have representative file for each 'change'.  Placeholders are included in the following change scenarios:
+---
 
-  | Git Change | Left Branch File Example                               | Right Branch File Example                                    |
-  | ---------- | ------------------------------------------------------ | :----------------------------------------------------------- |
-  | `Added`    | `/leftBranch/NewFile.cs-added` (zero bytes)            | `/rightBranch/NewFile.cs` (new file, new content)            |
-  | `Copied`   | `/leftBranch/OriginalFile.cs` (original content)       | `/rightBranch/OriginalFileCopied.cs` (original content copied) |
-  | `Deleted`  | `/leftBranch/OriginalFile.cs` (original content)       | `/rightBranch/OriginalFile.cs-deleted` (zero bytes)          |
-  | `Modified` | `/leftBranch/ModifiedFile.cs` (original content)       | `/rightBranch/ModifiedFile.cs` (modified content)            |
-  | `Renamed`  | `/leftBranch/RenameThisFile.cs-RXX` (original content) | `/rightBranch/RenamedFile.cs` (original file content, new file name) |
+## Non-Interactive Mode
 
-  - For `Rename` the `XX` represents the `Nth` occurrence of a rename within the changeset / commit
-    - - e.g. `R00` is the first rename, `R01` is the second, and so on
-  - `Manifest` - bookkeeping files and information generated by this tool are placed at the root of the archive (outside the directories representing each branch)
+The `-nonInteractive` switch enables fully scripted usage with no prompts. Smart defaults are applied for any parameter not explicitly provided:
 
-- The output of this tool is suitable for comparison using a `diff-tool` (that supports `directory diff`) of your choice
+| Parameter | Default When `-nonInteractive` |
+|-----------|-------------------------------|
+| `-repositoryPath` | Current working directory (must be a git root) |
+| `-leftBranch` | Default remote branch via `git symbolic-ref` |
+| `-rightBranch` | Currently checked-out branch via `git branch --show-current` |
+| `-outputDirectory` | Current working directory |
+| `-archiveFileName` | `<leftBranch> ⟷ <rightBranch>.zip` |
 
-  - This provides the ability to leverage additional features from the chosen tool, for example:
-    - better syntax highlighting
-    - detection of and suppression of 'unimportant' differences
-    - treat suffixed `placeholder` files as directly comparable to their counterpart in the opposite branch
-  - This also allows diff review to be done offline / disconnected
+### Examples
 
-#### Directory Diff Tool Recommendations
+```powershell
+# Run from inside a git repo — all defaults
+pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive
 
-- [Beyond Compare](https://www.scootersoftware.com/) (cross-platform)
-- [Meld](http://meldmerge.org/) (cross-platform)
+# Override just the output directory
+pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive -outputDirectory /tmp
+
+# Fully specified (nonInteractive prevents any prompts for missing values)
+pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive -repositoryPath /c/myRepo -leftBranch main -rightBranch feature/foo -outputDirectory /tmp
+```
+
+---
+
+## Output Format
+
+The tool creates a ZIP archive with this structure:
+
+```
+archive.zip
+├── leftBranch/                         # Files from the left (base) branch
+│   ├── src/
+│   │   ├── App.cs                      # Original version of modified file
+│   │   └── NewFeature.cs-added         # Empty placeholder (file was added in right)
+│   ├── OldName.cs-R095                 # Placeholder showing original name before rename
+│   └── Removed.cs                      # Original content of deleted file
+│
+├── rightBranch/                        # Files from the right (feature) branch
+│   ├── src/
+│   │   ├── App.cs                      # Modified version
+│   │   └── NewFeature.cs               # New file content
+│   ├── NewName.cs                      # File after rename
+│   └── Removed.cs-deleted              # Empty placeholder (file was deleted)
+│
+└── manifest/                           # Metadata generated by the tool
+    ├── Δ leftBranch ⟷ rightBranch      # Branch comparison info
+    └── commit# abc1234.manifest        # Change summary and file list
+```
+
+---
+
+## Placeholder Files
+
+Placeholder files ensure both sides of the diff have a representative file for every change, so directory-diff tools can display them side-by-side.
+
+| Git Status | Left Branch | Right Branch |
+|------------|-------------|--------------|
+| **Added** | `NewFile.cs-added` (zero bytes) | `NewFile.cs` (new content) |
+| **Deleted** | `OriginalFile.cs` (original content) | `OriginalFile.cs-deleted` (zero bytes) |
+| **Modified** | `File.cs` (original content) | `File.cs` (modified content) |
+| **Renamed** | `OldName.cs-R095` (original content) | `NewName.cs` (same content, new name) |
+| **Copied** | `Original.cs` (original content) | `CopiedFile.cs` (copied content) |
+
+For renames, the suffix (e.g., `-R095`) is the raw git rename status code, indicating the similarity percentage.
+
+---
+
+## Tab Completion
+
+When using PowerShell, tab completion is available for key parameters:
+
+| Parameter | Completes To |
+|-----------|-------------|
+| `-repositoryPath` | Directories containing a `.git` folder |
+| `-leftBranch` | Local and remote branch names |
+| `-rightBranch` | Local and remote branch names |
+
+```powershell
+# Type and press Tab to cycle through matching branches
+./Git-ArchiveBranchDiffs.ps1 -leftBranch ma<Tab>
+# Completes to: main
+
+./Git-ArchiveBranchDiffs.ps1 -rightBranch feat<Tab>
+# Completes to: feature/my-branch
+```
+
+> **Note**: Branch completion uses the repository specified by `-repositoryPath`, or the current directory if not specified.
+
+---
+
+## Diff Tool Recommendations
+
+Extract the archive and open the left/right branch directories in a directory-diff tool:
+
+| Tool | Platform | Notes |
+|------|----------|-------|
+| [Beyond Compare](https://www.scootersoftware.com/) | Windows, Linux, macOS | Excellent rename detection, can treat placeholder-suffixed files as comparable |
+| [Meld](http://meldmerge.org/) | Windows, Linux, macOS | Free and open-source |
+| [VS Code](https://code.visualstudio.com/) | Windows, Linux, macOS | Use with a folder-diff extension |
+| [WinMerge](https://winmerge.org/) | Windows | Free, lightweight |
+
+---
+
+## Troubleshooting
+
+### `git not found`
+Ensure `git` is installed and on your `PATH`. Verify with `git --version`.
+
+### Branch not found / defaults to HEAD
+- Check branch name spelling: `git branch -a` to list all branches
+- Remote-only branches need a fetch first: `git fetch origin`
+- The tool will try the remote version (e.g., `origin/branchName`) if the local branch isn't found
+
+### Permission denied
+- **Windows**: Run PowerShell as Administrator
+- **Linux/macOS**: Use `sudo` for the bash wrapper (needed for PowerShell Core installation)
+
+### Empty archive / no differences
+The branches may be identical. Verify differences exist: `git diff --stat <leftBranch>...<rightBranch>`
+
+### PowerShell version issues
+- **Windows**: PowerShell 5.1+ (built-in) or PowerShell Core 7.3.4+
+- **Linux/macOS**: PowerShell Core 7.3.4+ (auto-installed by the bash wrapper)
+- Check version: `$PSVersionTable.PSVersion`
+
+---
+
+## License
+
+[MIT](LICENSE)

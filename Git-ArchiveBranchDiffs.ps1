@@ -3,38 +3,83 @@
     Creates a ZIP archive containing the diff/delta between two related branches
 
     .DESCRIPTION
-    Creates a ZIP archive containing the diff/delta between two related branches
+    Creates a ZIP archive containing the diff/delta between two related branches.
     Ensure the following are on the PATH environment variable: { git }
+    Supports tab-completion for repository paths and branch names.
 
     .PARAMETER repositoryPath
-    Specifies directory path to the root of a `git` repository
+    Specifies directory path to the root of a git repository.
+    Tab-completes to directories containing a .git folder.
 
     .PARAMETER leftBranch
-    Specifies the name of the branch to be the left-side of a diff comparison
+    Specifies the name of the branch to be the left-side of a diff comparison.
+    Tab-completes to available local and remote branch names.
 
     .PARAMETER rightBranch
-    Specifies the name of the branch to be the right-side of a diff comparison
+    Specifies the name of the branch to be the right-side of a diff comparison.
+    Tab-completes to available local and remote branch names.
 
     .PARAMETER outputDirectory
-    Specifies the directory path where the ZIP file will be created
+    Specifies the directory path where the ZIP file will be created.
 
     .PARAMETER archiveFileName
-    [Optional] Specifies the name of the ZIP file that will be created
+    [Optional] Specifies the name of the ZIP file that will be created.
+
+    .PARAMETER nonInteractive
+    [Optional] When set, uses smart defaults instead of prompting:
+    repositoryPath defaults to current directory, leftBranch to the default remote branch,
+    rightBranch to the currently checked-out branch, outputDirectory to current directory.
 
     .EXAMPLE
     PS> ./Git-ArchiveBranchDiffs.ps1 -repositoryPath /c/myRepo -leftBranch master -rightBranch f/myBranch -outputDirectory /tmp
+
+    .EXAMPLE
+    PS> ./Git-ArchiveBranchDiffs.ps1 -nonInteractive
 #>
 Param (
     [parameter(Mandatory=$false)]
-	[string]$repositoryPath, 
+	[ArgumentCompleter({
+		param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+		Get-ChildItem -Path "$wordToComplete*" -Directory -ErrorAction SilentlyContinue |
+			Where-Object { Test-Path (Join-Path $_.FullName ".git") } |
+			ForEach-Object { $_.FullName }
+	})]
+	[string]$repositoryPath,
+
     [parameter(Mandatory=$false)]
-	[string]$leftBranch, 
+	[ArgumentCompleter({
+		param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+		$repoPath = $fakeBoundParameters['repositoryPath']
+		if([string]::IsNullOrWhiteSpace($repoPath)) { $repoPath = (Get-Location).Path }
+		if(Test-Path (Join-Path $repoPath ".git")) {
+			Push-Location $repoPath
+			try { git branch -a --format='%(refname:short)' 2>$null | Where-Object { $_ -like "$wordToComplete*" } }
+			finally { Pop-Location }
+		}
+	})]
+	[string]$leftBranch,
+
     [parameter(Mandatory=$false)]
-	[string]$rightBranch, 
+	[ArgumentCompleter({
+		param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+		$repoPath = $fakeBoundParameters['repositoryPath']
+		if([string]::IsNullOrWhiteSpace($repoPath)) { $repoPath = (Get-Location).Path }
+		if(Test-Path (Join-Path $repoPath ".git")) {
+			Push-Location $repoPath
+			try { git branch -a --format='%(refname:short)' 2>$null | Where-Object { $_ -like "$wordToComplete*" } }
+			finally { Pop-Location }
+		}
+	})]
+	[string]$rightBranch,
+
     [parameter(Mandatory=$false)]
 	[System.IO.DirectoryInfo]$outputDirectory,
+
 	[parameter(Mandatory=$false)]
-	[string]$archiveFileName = $null
+	[string]$archiveFileName = $null,
+
+	[parameter(Mandatory=$false)]
+	[switch]$nonInteractive
 )
 
 Set-StrictMode -Version Latest
@@ -53,7 +98,9 @@ Function Write-Warn {
 }
 
 Function Write-Fail {
-    Write-Host $args -ForegroundColor Red -BackgroundColor Black
+    [string]$message = $args -join ' '
+    Write-Host $message -ForegroundColor Red -BackgroundColor Black
+    throw $message
 }
 
 Function Read-Prompt {
@@ -63,7 +110,141 @@ Function Read-Prompt {
         [string]
         $prompt
     )
-    $(Write-Host -ForegroundColor Blue $($prompt + ": ")) + $(Read-Host)     
+    $(Write-Host -ForegroundColor Blue $($prompt + ": ")) + $(Read-Host)
+}
+
+Function Get-PathCompletions {
+    [OutputType([string[]])]
+    Param (
+        [Parameter(Mandatory=$true)]
+        [string]$partialPath
+    )
+
+    [string]$directory = ""
+    [string]$prefix = ""
+
+    if($partialPath.EndsWith("\") -or $partialPath.EndsWith("/"))
+    {
+        $directory = $partialPath
+        $prefix = ""
+    }
+    elseif($partialPath.Contains("\") -or $partialPath.Contains("/"))
+    {
+        $directory = [System.IO.Path]::GetDirectoryName($partialPath)
+        $prefix = [System.IO.Path]::GetFileName($partialPath)
+    }
+    else
+    {
+        $directory = "."
+        $prefix = $partialPath
+    }
+
+    if([string]::IsNullOrEmpty($directory) -or -not [System.IO.Directory]::Exists($directory)) { return @() }
+
+    [string[]]$matches = @(Get-ChildItem -Path $directory -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $prefix.Length -eq 0 -or $_.Name.StartsWith($prefix, [System.StringComparison]::InvariantCultureIgnoreCase) } |
+        ForEach-Object {
+            if($directory -eq ".") { $_.Name }
+            else { [System.IO.Path]::Combine($directory, $_.Name) }
+        })
+    return $matches
+}
+
+Function Read-PromptWithCompletion {
+    [OutputType([string])]
+    Param (
+        [Parameter(Mandatory=$true)]
+        [string]$prompt,
+        [Parameter(Mandatory=$false)]
+        [string[]]$candidates = @(),
+        [Parameter(Mandatory=$false)]
+        [switch]$pathMode
+    )
+
+    Write-Host -ForegroundColor Blue $($prompt + ": ") -NoNewline
+
+    [string]$userInput = ""
+    [string]$ghost = ""
+
+    while($true)
+    {
+        # Resolve candidates: dynamic for paths, static for everything else
+        [string[]]$activeCandidates = $candidates
+        if($pathMode -and $userInput.Length -gt 0)
+        {
+            $activeCandidates = @(Get-PathCompletions $userInput)
+        }
+
+        # Find best matching candidate for current input
+        [string]$ghost = ""
+        if($userInput.Length -gt 0 -and $activeCandidates.Count -gt 0)
+        {
+            foreach($c in $activeCandidates)
+            {
+                if($c.StartsWith($userInput, [System.StringComparison]::InvariantCultureIgnoreCase))
+                {
+                    $ghost = $c.Substring($userInput.Length)
+                    break
+                }
+            }
+        }
+
+        # Show ghost text (greyed out completion hint)
+        if($ghost.Length -gt 0)
+        {
+            Write-Host $ghost -ForegroundColor DarkGray -NoNewline
+            $pos = $Host.UI.RawUI.CursorPosition
+            $pos.X -= $ghost.Length
+            $Host.UI.RawUI.CursorPosition = $pos
+        }
+
+        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+        # Clear ghost text before processing keystroke
+        if($ghost.Length -gt 0)
+        {
+            Write-Host (" " * $ghost.Length) -NoNewline
+            $pos = $Host.UI.RawUI.CursorPosition
+            $pos.X -= $ghost.Length
+            $Host.UI.RawUI.CursorPosition = $pos
+        }
+
+        if($key.VirtualKeyCode -eq [System.ConsoleKey]::Enter)
+        {
+            Write-Host ""
+            return $userInput
+        }
+        elseif($key.VirtualKeyCode -eq [System.ConsoleKey]::Tab)
+        {
+            if($ghost.Length -gt 0)
+            {
+                Write-Host $ghost -ForegroundColor White -NoNewline
+                $userInput += $ghost
+            }
+        }
+        elseif($key.VirtualKeyCode -eq [System.ConsoleKey]::Backspace)
+        {
+            if($userInput.Length -gt 0)
+            {
+                $userInput = $userInput.Substring(0, $userInput.Length - 1)
+                Write-Host "`b `b" -NoNewline
+            }
+        }
+        elseif($key.VirtualKeyCode -eq [System.ConsoleKey]::Escape)
+        {
+            # Clear entire input
+            if($userInput.Length -gt 0)
+            {
+                Write-Host ("`b `b" * $userInput.Length) -NoNewline
+                $userInput = ""
+            }
+        }
+        elseif($key.Character -ne 0 -and -not [System.Char]::IsControl($key.Character))
+        {
+            $userInput += $key.Character
+            Write-Host $key.Character -ForegroundColor White -NoNewline
+        }
+    }
 }
 #endregion  Short output functions
 
@@ -271,7 +452,9 @@ function CreateZipImpl (
     #[Parameter(Mandatory=$false)]
     [boolean]$includeParentDirectoryName = $false,
     #[Parameter(Mandatory=$false)]
-    [string]$nestInDirectoryOverride = ""
+    [string]$nestInDirectoryOverride = "",
+    #[Parameter(Mandatory=$false)]
+    [Nullable[System.DateTimeOffset]]$lastWriteTime = $null
     )
 {
     $ErrorActionPreference = "stop" # you can opt to stagger on, bleeding, if an error occurs
@@ -620,7 +803,7 @@ class TempDirectoryScope {
 	[string] GetEmptyTempFile() {
 		[string]$fileName = Get-UniqueName
 		[string]$tempFilePath = [System.IO.Path]::Combine($this.Directory.FullName, $fileName)
-		Set-Content -Path "$tempFilePath" -Value $([string]::Empty)
+		[System.IO.File]::Create($tempFilePath).Close()
 		return $tempFilePath
 	}
 
@@ -672,7 +855,8 @@ class GitDiff {
 		if($null -eq $statusRaw) {
 			Write-Fail "statusRaw should not be null"
 		}
-		if($null -eq $originalFilePath) {
+		# originalFilePath is legitimately null for manifest entries (status X)
+		if($null -eq $originalFilePath -and $statusRaw -ne [GitDiffStatusRaw]::X.ToString()) {
 			Write-Fail "originalFilePath should not be null"
 		}
 		if($null -eq $filePath) {
@@ -683,8 +867,8 @@ class GitDiff {
 		$this.RenameToken = $null
 		if($statusRaw.StartsWith([GitDiffStatusRaw]::R.ToString())) 
 		{
-			#e.g.  R095
-			$this.RenameToken =  "renamed-" + $statusRaw.Substring(1)
+			#e.g.  R095 → token "R095"
+			$this.RenameToken = $statusRaw
 			$this.Status = [GitDiffStatusRaw]::R.ToString()
 		}
 		else 
@@ -840,7 +1024,7 @@ class GitBranch {
 			
 			if([string]::IsNullOrWhiteSpace($this.CommitHash))
 			{
-				Write-Fail branch $this.BranchName not found, defaulting to 'HEAD'
+				Write-Warn "branch '$($this.BranchName)' not found, defaulting to 'HEAD'"
 				$this.CommitHash = git rev-parse "HEAD"
 			}
 		}
@@ -998,7 +1182,7 @@ class GitBranchDirectory {
 				$fileInfo.LastWriteTime = $commitDate.DateTime
 			}
 			catch {
-				Write-Fail $Error[0]
+				Write-Warn "Failed to write file: $($Error[0])"
 			}
 			return $fileInfo
 		}
@@ -1099,7 +1283,7 @@ class GitDiffBranch {
 			CreateZipFromPathsImpl $diffFilePaths $rootedPathToIgnore $destinationPath $archiveFileName $false
 		}
 		catch {
-			Write-Fail $Error[0]
+			Write-Fail "Failed to create archive: $($Error[0])"
 		}
 		finally{
 			$this.RootDirectory.Delete($true)
@@ -1236,7 +1420,8 @@ class GitTool {
 			$commitHash = "HEAD~1" # previous commit
 		}
 
-		Write-Info Diffing $commitHash...
+		Write-Host "  → " -ForegroundColor Cyan -NoNewline
+		Write-Host "Diffing $commitHash..." -ForegroundColor Gray
 		[object[]]$diffsRawArray = @()
 		if([string]::IsNullOrWhiteSpace($changesCommitHash))
 		{
@@ -1301,10 +1486,6 @@ class GitTool {
         {
             return $null
         }
-		Write-Info Wrote Archive: """$($archiveFile.FullName)"""
-		Write-Success "Extract the archive and use a diff tool that supports directory-diff to review the changes"
-		Write-Success ""
-		Write-Success "`t e.g. BeyondCompare, Meld, etc."
 		return $archiveFile
 	}
 
@@ -1431,8 +1612,9 @@ class GitTool {
 		}
 
 		[string]$showFile = $($branchOrRevision + ":" + $repoFilePath)
-		
+
 		[string]$showResultFilePath = $script:Temp.GetEmptyTempFile()
+
 		git --no-pager show $showFile > $showResultFilePath
 
 		[System.IO.FileInfo]$showResultFile = [System.IO.FileInfo]::new($showResultFilePath)
@@ -1499,98 +1681,256 @@ class GitTool {
 [System.IO.DirectoryInfo]$currentDirectory = [System.IO.DirectoryInfo]::new($(Get-Location))
 [Environment]::CurrentDirectory = $currentDirectory.FullName
 
-Write-Info Lets create an archive of delta between two branches...
-Write-Info ""
+[System.Diagnostics.Stopwatch]$script:stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-if([string]::IsNullOrWhiteSpace($repositoryPath))
+#region Banner
+[int]$boxWidth = 50
+function Write-BoxLine([string]$text, [string]$textColor = "White") {
+	[int]$padding = $boxWidth - $text.Length
+	Write-Host "  ║" -ForegroundColor Cyan -NoNewline
+	Write-Host $text -ForegroundColor $textColor -NoNewline
+	Write-Host (" " * $padding) -ForegroundColor Cyan -NoNewline
+	Write-Host "║" -ForegroundColor Cyan
+}
+Write-Host ""
+Write-Host "  ╔$("═" * $boxWidth)╗" -ForegroundColor Cyan
+Write-BoxLine ""
+Write-BoxLine "   Git-ArchiveBranchDiffs"
+Write-BoxLine "   Archive branch diffs for offline review" "DarkGray"
+Write-BoxLine ""
+Write-Host "  ╚$("═" * $boxWidth)╝" -ForegroundColor Cyan
+Write-Host ""
+#endregion Banner
+
+try {
+
+#region Input Resolution
+Write-Host "  ── " -ForegroundColor DarkGray -NoNewline
+Write-Host "Input Resolution" -ForegroundColor Cyan -NoNewline
+Write-Host " ──────────────────────────────" -ForegroundColor DarkGray
+Write-Host ""
+
+if($nonInteractive)
 {
-	
-	if(-not [string]::Equals($currentDirectory.FullName, $PSScriptRoot, [System.StringComparison]::InvariantCultureIgnoreCase) -and
-	   [GitTool]::IsGitRoot($currentDirectory.FullName)) 
-	{
-		$useCurrentDirectory = Read-Prompt "Use '$currentDirectory' as the `git` repository root? (Y/N)"
-
-		if([string]::Equals($useCurrentDirectory, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or 
-		[string]::Equals($useCurrentDirectory, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
-		{
-			$repositoryPath = [System.IO.Path]::GetFullPath($currentDirectory)
-		}
-	}
-
+	# Non-interactive mode: use smart defaults
 	if([string]::IsNullOrWhiteSpace($repositoryPath))
 	{
-		$repositoryPath = Read-Prompt "Enter the path to the root of a `git` repository"
-		$repositoryPath = [System.IO.Path]::GetFullPath($repositoryPath)
+		if([GitTool]::IsGitRoot($currentDirectory.FullName))
+		{
+			$repositoryPath = $currentDirectory.FullName
+		}
+		else
+		{
+			Write-Fail "Current directory is not a git repository root. Specify -repositoryPath."
+		}
+	}
+}
+else
+{
+	if([string]::IsNullOrWhiteSpace($repositoryPath))
+	{
+		if(-not [string]::Equals($currentDirectory.FullName, $PSScriptRoot, [System.StringComparison]::InvariantCultureIgnoreCase) -and
+		   [GitTool]::IsGitRoot($currentDirectory.FullName))
+		{
+			$useCurrentDirectory = Read-Prompt "Use '$currentDirectory' as the git repository root? (Y/N)"
+
+			if([string]::Equals($useCurrentDirectory, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or
+			[string]::Equals($useCurrentDirectory, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+			{
+				$repositoryPath = [System.IO.Path]::GetFullPath($currentDirectory)
+			}
+		}
+
+		if([string]::IsNullOrWhiteSpace($repositoryPath))
+		{
+			$repositoryPath = Read-PromptWithCompletion "Enter the path to the root of a git repository" -pathMode
+			$repositoryPath = [System.IO.Path]::GetFullPath($repositoryPath)
+		}
 	}
 }
 
 if(-not [GitTool]::IsGitRoot($repositoryPath))
 {
-	Write-Fail "'$repositoryPath' does not appear to be a `git` repository root."
-	Exit
+	Write-Fail "'$repositoryPath' does not appear to be a git repository root."
 }
+
+Write-Host "  ✓ " -ForegroundColor Green -NoNewline
+Write-Host "Repository: " -ForegroundColor Gray -NoNewline
+Write-Host "$repositoryPath" -ForegroundColor White
 
 Push-Location -Path $repositoryPath
 
-if([string]::IsNullOrWhiteSpace($leftBranch))
+if($nonInteractive)
 {
-	[string]$defaultBranch = [GitTool]::GetDefaultRemoteBranch()
-
-	$useDefaultBranch = Read-Prompt "Use '$defaultBranch' as LEFT branch for comparison? (Y/N)"
-
-	if([string]::Equals($useDefaultBranch, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or 
-	[string]::Equals($useDefaultBranch, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+	if([string]::IsNullOrWhiteSpace($leftBranch))
 	{
-		$leftBranch = $defaultBranch
+		$leftBranch = [GitTool]::GetDefaultRemoteBranch()
+		if([string]::IsNullOrWhiteSpace($leftBranch))
+		{
+			Write-Fail "Could not detect default remote branch. Specify -leftBranch."
+		}
 	}
-	else
+
+	if([string]::IsNullOrWhiteSpace($rightBranch))
 	{
-		$leftBranch = Read-Prompt "Enter the name of the LEFT branch for comparison"
+		$rightBranch = [GitTool]::GetCurrentBranch()
+		if([string]::IsNullOrWhiteSpace($rightBranch))
+		{
+			Write-Fail "Could not detect current branch. Specify -rightBranch."
+		}
+	}
+}
+else
+{
+	if([string]::IsNullOrWhiteSpace($leftBranch))
+	{
+		[string]$defaultBranch = [GitTool]::GetDefaultRemoteBranch()
+
+		$useDefaultBranch = Read-Prompt "Use '$defaultBranch' as LEFT branch for comparison? (Y/N)"
+
+		if([string]::Equals($useDefaultBranch, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or
+		[string]::Equals($useDefaultBranch, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+		{
+			$leftBranch = $defaultBranch
+		}
+		else
+		{
+			[string[]]$branches = @(git branch -a --format='%(refname:short)' 2>$null)
+			if($branches.Count -gt 0)
+			{
+				$leftBranch = Read-PromptWithCompletion "Enter the name of the LEFT branch for comparison" $branches
+			}
+			else
+			{
+				$leftBranch = Read-Prompt "Enter the name of the LEFT branch for comparison"
+			}
+		}
+	}
+
+	if([string]::IsNullOrWhiteSpace($rightBranch))
+	{
+		[string]$currentBranch = [GitTool]::GetCurrentBranch()
+
+		$useCurrentBranch = Read-Prompt "Use '$currentBranch' as RIGHT branch for comparison? (Y/N)"
+
+		if([string]::Equals($useCurrentBranch, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or
+		[string]::Equals($useCurrentBranch, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+		{
+			$rightBranch = $currentBranch
+		}
+		else
+		{
+			[string[]]$branches = @(git branch -a --format='%(refname:short)' 2>$null)
+			if($branches.Count -gt 0)
+			{
+				$rightBranch = Read-PromptWithCompletion "Enter the name of the RIGHT branch for comparison" $branches
+			}
+			else
+			{
+				$rightBranch = Read-Prompt "Enter the name of the RIGHT branch for comparison"
+			}
+		}
 	}
 }
 
 Pop-Location
 
-if([string]::IsNullOrWhiteSpace($rightBranch))
+Write-Host "  ✓ " -ForegroundColor Green -NoNewline
+Write-Host "Left branch:  " -ForegroundColor Gray -NoNewline
+Write-Host "$leftBranch" -ForegroundColor White
+Write-Host "  ✓ " -ForegroundColor Green -NoNewline
+Write-Host "Right branch: " -ForegroundColor Gray -NoNewline
+Write-Host "$rightBranch" -ForegroundColor White
+
+if($nonInteractive)
 {
-	[string]$currentBranch = [GitTool]::GetCurrentBranch()
-
-	$useCurrentBranch = Read-Prompt "Use '$currentBranch' as RIGHT branch for comparison? (Y/N)"
-
-	if([string]::Equals($useCurrentBranch, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or 
-	[string]::Equals($useCurrentBranch, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
+	if([string]::IsNullOrWhiteSpace($outputDirectory))
 	{
-		$rightBranch = $currentBranch
-	}
-	else
-	{
-		$rightBranch = Read-Prompt "Enter the name of the RIGHT branch for comparison"
+		$outputDirectory = $currentDirectory.FullName
 	}
 }
-
-if([string]::IsNullOrWhiteSpace($outputDirectory))
+else
 {
-    $outputDirectory = Read-Prompt "Enter the path where the ZIP will be created"
-	$outputDirectory = [System.IO.Path]::GetFullPath($outputDirectory)
+	if([string]::IsNullOrWhiteSpace($outputDirectory))
+	{
+		$outputDirectory = Read-PromptWithCompletion "Enter the path where the ZIP will be created" -pathMode
+		$outputDirectory = [System.IO.Path]::GetFullPath($outputDirectory)
+	}
 }
 
-if([string]::IsNullOrWhiteSpace($archiveFileName))
-{
-    $specifyArchiveName = Read-Prompt "Do you want to name the ZIP file? (Y/N)"
+Write-Host "  ✓ " -ForegroundColor Green -NoNewline
+Write-Host "Output dir:   " -ForegroundColor Gray -NoNewline
+Write-Host "$outputDirectory" -ForegroundColor White
+Write-Host ""
+#endregion Input Resolution
 
-    if([string]::Equals($specifyArchiveName, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or 
-       [string]::Equals($specifyArchiveName, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
-    {
-        $archiveFileName = Read-Prompt "Enter a name for the ZIP file that will be created"
-    }
-}
+#region Diff and Archive
+Write-Host "  ── " -ForegroundColor DarkGray -NoNewline
+Write-Host "Diff Analysis & Archive Creation" -ForegroundColor Cyan -NoNewline
+Write-Host " ──────────────" -ForegroundColor DarkGray
+Write-Host ""
 
 Push-Location -Path $repositoryPath
 
-[GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+[System.IO.FileInfo]$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
 
-$script:Temp.Cleanup()
-$script:Temp = $null
+$script:stopwatch.Stop()
 
 Pop-Location
-#😺
+#endregion Diff and Archive
+
+#region Summary
+if($null -ne $archiveFile -and $archiveFile.Exists)
+{
+	[double]$sizeKB = $archiveFile.Length / 1024.0
+	[string]$sizeDisplay = $(if($sizeKB -ge 1024) { "{0:N1} MB" -f ($sizeKB / 1024.0) } else { "{0:N1} KB" -f $sizeKB })
+	[string]$elapsed = "{0:N1}s" -f $script:stopwatch.Elapsed.TotalSeconds
+
+	[int]$labelWidth = 14
+	[int]$valueWidth = 34
+	[int]$tableWidth = $labelWidth + 1 + $valueWidth  # +1 for middle ┬/│
+
+	function Write-TableRow([string]$label, [string]$value, [string]$valueColor = "White") {
+		Write-Host "  │" -ForegroundColor Green -NoNewline
+		Write-Host ("{0,-$labelWidth}" -f " $label") -ForegroundColor Gray -NoNewline
+		Write-Host "│" -ForegroundColor Green -NoNewline
+		Write-Host ("{0,-$valueWidth}" -f " $value") -ForegroundColor $valueColor -NoNewline
+		Write-Host "│" -ForegroundColor Green
+	}
+
+	[string]$archiveDisplay = $archiveFile.Name
+	if($archiveDisplay.Length -gt ($valueWidth - 2)) { $archiveDisplay = $archiveFile.Name.Substring(0, $valueWidth - 5) + "..." }
+	[string]$pathDisplay = $archiveFile.Directory.FullName
+	if($pathDisplay.Length -gt ($valueWidth - 2)) { $pathDisplay = "..." + $archiveFile.Directory.FullName.Substring($archiveFile.Directory.FullName.Length - ($valueWidth - 6)) }
+
+	Write-Host ""
+	Write-Host "  ┌$("─" * $tableWidth)┐" -ForegroundColor Green
+	Write-Host "  │" -ForegroundColor Green -NoNewline
+	Write-Host ("{0,-$tableWidth}" -f " Archive Created Successfully") -ForegroundColor White -NoNewline
+	Write-Host "│" -ForegroundColor Green
+	Write-Host "  ├$("─" * $labelWidth)┬$("─" * $valueWidth)┤" -ForegroundColor Green
+	Write-TableRow "Left Branch" $leftBranch
+	Write-TableRow "Right Branch" $rightBranch
+	Write-TableRow "Archive" $archiveDisplay
+	Write-TableRow "Size" $sizeDisplay
+	Write-TableRow "Elapsed" $elapsed
+	Write-TableRow "Path" $pathDisplay
+	Write-Host "  └$("─" * $labelWidth)┴$("─" * $valueWidth)┘" -ForegroundColor Green
+	Write-Host ""
+	Write-Host "  Extract the archive and use a directory-diff tool to review:" -ForegroundColor Gray
+	Write-Host "    Beyond Compare, Meld, VS Code, etc." -ForegroundColor DarkGray
+	Write-Host ""
+}
+else
+{
+	Write-Host ""
+	Write-Host "  No differences found between the specified branches." -ForegroundColor Yellow
+	Write-Host ""
+}
+#endregion Summary
+
+}
+finally {
+	$script:Temp.Cleanup()
+	$script:Temp = $null
+}
