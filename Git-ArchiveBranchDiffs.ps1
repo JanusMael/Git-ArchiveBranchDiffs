@@ -2480,9 +2480,12 @@ class GitTool {
 		return $false
 	}
 
-	static [bool] IsGitRoot([string]$directoryPath) 
+	static [bool] IsGitRoot([string]$directoryPath)
 	{
-		return [System.IO.Directory]::Exists([System.IO.Path]::Combine($directoryPath, ".git"))
+		# A normal repo has a .git directory; a worktree has a .git file that
+		# points at the shared gitdir. Accept both.
+		[string]$dotGit = [System.IO.Path]::Combine($directoryPath, ".git")
+		return [System.IO.Directory]::Exists($dotGit) -or [System.IO.File]::Exists($dotGit)
 	}
 
 	static [Void] Clean()
