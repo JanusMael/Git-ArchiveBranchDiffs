@@ -483,6 +483,82 @@ Describe "Git-ArchiveBranchDiffs" {
         }
     }
 
+    Describe "GitDiffStat.Parse" {
+
+        It "parses a text file stat line" {
+            $stat = [GitDiffStat]::Parse("10`t3`tsrc/file.txt")
+            $stat.Insertions | Should -Be 10
+            $stat.Deletions | Should -Be 3
+            $stat.FilePath | Should -Be "src/file.txt"
+            $stat.IsBinary | Should -BeFalse
+            $stat.OriginalFilePath | Should -BeNullOrEmpty
+        }
+
+        It "flags binary files with dashes" {
+            $stat = [GitDiffStat]::Parse("-`t-`timage.png")
+            $stat.IsBinary | Should -BeTrue
+            $stat.Insertions | Should -Be 0
+            $stat.Deletions | Should -Be 0
+        }
+
+        It "handles zero-change entries" {
+            $stat = [GitDiffStat]::Parse("0`t0`tempty.txt")
+            $stat.Insertions | Should -Be 0
+            $stat.Deletions | Should -Be 0
+            $stat.IsBinary | Should -BeFalse
+        }
+
+        It "extracts rename arrow (old => new)" {
+            $stat = [GitDiffStat]::Parse("5`t2`told.txt => new.txt")
+            $stat.OriginalFilePath | Should -Be "old.txt"
+            $stat.FilePath | Should -Be "new.txt"
+        }
+
+        It "returns null for empty input" {
+            [GitDiffStat]::Parse("") | Should -BeNullOrEmpty
+            [GitDiffStat]::Parse($null) | Should -BeNullOrEmpty
+        }
+
+        It "returns null for too-few fields" {
+            [GitDiffStat]::Parse("10`t3") | Should -BeNullOrEmpty
+        }
+
+        It "ToString shows +/- for text files" {
+            $stat = [GitDiffStat]::Parse("10`t3`tsrc/file.txt")
+            $stat.ToString() | Should -Match "\+10"
+            $stat.ToString() | Should -Match "-3"
+        }
+
+        It "ToString shows (binary) for binary files" {
+            $stat = [GitDiffStat]::Parse("-`t-`timage.png")
+            $stat.ToString() | Should -Match "\(binary\)"
+        }
+    }
+
+    Describe "GitTool.GetDiffStat" {
+
+        It "returns empty for empty inputs" {
+            @([GitTool]::GetDiffStat("", "HEAD")).Count | Should -Be 0
+            @([GitTool]::GetDiffStat("HEAD", "")).Count | Should -Be 0
+        }
+
+        It "returns empty for HEAD compared to itself" {
+            $result = @([GitTool]::GetDiffStat("HEAD", "HEAD"))
+            $result.Count | Should -Be 0
+        }
+
+        It "returns GitDiffStat objects for HEAD~1..HEAD" {
+            $parent = git rev-parse "HEAD~1" 2>$null
+            if($LASTEXITCODE -eq 0 -and $null -ne $parent) {
+                $stats = @([GitTool]::GetDiffStat("HEAD~1", "HEAD"))
+                foreach($s in $stats) {
+                    $s.GetType().Name | Should -Be "GitDiffStat"
+                    $s.FilePath | Should -Not -BeNullOrEmpty
+                }
+            }
+        }
+    }
+
     Describe "GitTool.GetCommitFiles" {
 
         It "returns empty for null or empty hash" {

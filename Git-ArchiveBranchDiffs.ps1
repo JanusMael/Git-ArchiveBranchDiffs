@@ -1799,6 +1799,52 @@ class GitLogEntry {
 	}
 }
 
+<# Per-file insertion/deletion counts from `git diff --numstat` #>
+class GitDiffStat {
+	[string]$FilePath
+	[string]$OriginalFilePath # populated for renames (source path)
+	[int]$Insertions
+	[int]$Deletions
+	[bool]$IsBinary
+
+	GitDiffStat([string]$filePath, [string]$originalFilePath, [int]$insertions, [int]$deletions, [bool]$isBinary) {
+		$this.FilePath = $filePath
+		$this.OriginalFilePath = $originalFilePath
+		$this.Insertions = $insertions
+		$this.Deletions = $deletions
+		$this.IsBinary = $isBinary
+	}
+
+	# Parses a single `git diff --numstat` line.
+	# Format: "<ins>\t<del>\t<path>"   (binary files use "-" for both counts)
+	# Renames appear as: "<ins>\t<del>\t<old> => <new>"  (without -z).
+	static [GitDiffStat] Parse([string]$line) {
+		if([string]::IsNullOrWhiteSpace($line)) { return $null }
+		[string[]]$parts = $line.Split("`t")
+		if($parts.Length -lt 3) { return $null }
+		[bool]$binaryFlag = ($parts[0] -eq "-" -and $parts[1] -eq "-")
+		[int]$ins = 0
+		[int]$del = 0
+		if(-not $binaryFlag) {
+			[void][int]::TryParse($parts[0], [ref]$ins)
+			[void][int]::TryParse($parts[1], [ref]$del)
+		}
+		[string]$path = $parts[2]
+		[string]$origPath = $null
+		[int]$arrow = $path.IndexOf(" => ")
+		if($arrow -ge 0) {
+			$origPath = $path.Substring(0, $arrow)
+			$path = $path.Substring($arrow + 4)
+		}
+		return [GitDiffStat]::new($path, $origPath, $ins, $del, $binaryFlag)
+	}
+
+	[string] ToString() {
+		if($this.IsBinary) { return "(binary) $($this.FilePath)" }
+		return "+$($this.Insertions) -$($this.Deletions) $($this.FilePath)"
+	}
+}
+
 <# wrapper around select `git <command>` #>
 class GitTool {
 	static [GitDiff[]] GitDiff() {
@@ -2236,6 +2282,20 @@ class GitTool {
 			if($null -ne $diff) { $diffs.Add($diff) }
 		}
 		return $diffs.ToArray()
+	}
+
+	# Returns per-file insertion/deletion counts between two revisions.
+	# Accepts "A..B" range or two separate refs via DiffStat(left, right).
+	static [GitDiffStat[]] GetDiffStat([string]$left, [string]$right) {
+		if([string]::IsNullOrWhiteSpace($left) -or [string]::IsNullOrWhiteSpace($right)) { return @() }
+		[string[]]$lines = @(git --no-pager diff --numstat $left $right 2>$null)
+		if($LASTEXITCODE -ne 0) { return @() }
+		[System.Collections.Generic.List[GitDiffStat]]$stats = [System.Collections.Generic.List[GitDiffStat]]::new()
+		foreach($line in $lines) {
+			[GitDiffStat]$s = [GitDiffStat]::Parse($line)
+			if($null -ne $s) { $stats.Add($s) }
+		}
+		return $stats.ToArray()
 	}
 
 	# Returns [GitStatusEntry] objects, one per porcelain line.
