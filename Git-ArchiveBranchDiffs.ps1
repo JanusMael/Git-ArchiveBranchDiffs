@@ -2764,11 +2764,31 @@ if(-not $workingTree -and -not $staged) {
 
 [System.IO.FileInfo]$archiveFile = $null
 if($workingTree) {
+	[GitStatusEntry[]]$status = [GitTool]::GetStatus()
+	[GitStatusEntry[]]$dirty = @($status | Where-Object { $_.IsModifiedInWorkTree() -or $_.IsUntracked() })
+	if($dirty.Length -eq 0) {
+		Write-Host ""
+		Write-Host "  Working tree is clean — nothing to archive." -ForegroundColor Yellow
+		Write-Host ""
+		Pop-Location
+		return
+	}
+	Write-Host "  Found $($dirty.Length) uncommitted change(s) in working tree." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
 	[GitBranch]$rightBranchObj = [GitBranch]::ForWorkTree()
 	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
 }
 elseif($staged) {
+	[GitStatusEntry[]]$status = [GitTool]::GetStatus()
+	[GitStatusEntry[]]$stagedEntries = @($status | Where-Object { $_.IsStaged() })
+	if($stagedEntries.Length -eq 0) {
+		Write-Host ""
+		Write-Host "  Index is empty — nothing to archive." -ForegroundColor Yellow
+		Write-Host ""
+		Pop-Location
+		return
+	}
+	Write-Host "  Found $($stagedEntries.Length) staged change(s)." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
 	[GitBranch]$rightBranchObj = [GitBranch]::ForStaged()
 	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
