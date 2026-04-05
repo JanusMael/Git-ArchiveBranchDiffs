@@ -1455,6 +1455,11 @@ class GitDiffBranch {
 
 		[string[]]$fileArgs = $filePaths.ToArray()
 
+		# Fast lookup for "is this file in the archive's diff set?"
+		[System.Collections.Generic.HashSet[string]]$diffSet =
+			[System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+		foreach($fp in $fileArgs) { [void]$diffSet.Add($fp) }
+
 		# Get structured commits on each side that touched diff'd files
 		[string]$rightBranchName = $this.RightBranch.Branch.BranchName
 		[GitLogEntry[]]$rightLog = [GitTool]::GetLog("$mergeBase..$rightHash", 0, $fileArgs)
@@ -1464,6 +1469,14 @@ class GitDiffBranch {
 
 		if($rightLog.Length -eq 0 -and $leftLog.Length -eq 0) { return $null }
 
+		# Churn stats: merge-base → each side, limited to diff-set files
+		[GitDiffStat[]]$rightStats = @([GitTool]::GetDiffStat($mergeBase, $rightHash) |
+			Where-Object { $diffSet.Contains($_.FilePath) })
+		[GitDiffStat[]]$leftStats = @([GitTool]::GetDiffStat($mergeBase, $leftHash) |
+			Where-Object { $diffSet.Contains($_.FilePath) })
+
+		[int]$perCommitFilesCap = 200  # avoid running diff-tree hundreds of times on giant histories
+
 		# Build history content
 		[System.Collections.Generic.List[string]]$lines = [System.Collections.Generic.List[string]]::new()
 		$lines.Add("# Commit History (files in diff only)")
@@ -1471,11 +1484,30 @@ class GitDiffBranch {
 		$lines.Add("Merge-base: $mergeBaseShort")
 		$lines.Add("")
 
+		# Churn summary section
+		if($rightStats.Length -gt 0 -or $leftStats.Length -gt 0)
+		{
+			$lines.Add("## Churn Summary")
+			$lines.Add("")
+			if($rightStats.Length -gt 0) {
+				$lines.Add("### $rightBranchName (vs merge-base)")
+				$lines.Add("")
+				$this.AppendChurnTable($lines, $rightStats)
+				$lines.Add("")
+			}
+			if($leftStats.Length -gt 0) {
+				$lines.Add("### $leftBranchName (vs merge-base)")
+				$lines.Add("")
+				$this.AppendChurnTable($lines, $leftStats)
+				$lines.Add("")
+			}
+		}
+
 		if($rightLog.Length -gt 0)
 		{
 			$lines.Add("## $rightBranchName ($($rightLog.Length) commits)")
 			$lines.Add("")
-			foreach($entry in $rightLog) { $lines.Add("- $entry") }
+			$this.AppendCommitBlocks($lines, $rightLog, $diffSet, $perCommitFilesCap)
 			$lines.Add("")
 		}
 
@@ -1483,7 +1515,7 @@ class GitDiffBranch {
 		{
 			$lines.Add("## $leftBranchName ($($leftLog.Length) commits)")
 			$lines.Add("")
-			foreach($entry in $leftLog) { $lines.Add("- $entry") }
+			$this.AppendCommitBlocks($lines, $leftLog, $diffSet, $perCommitFilesCap)
 			$lines.Add("")
 		}
 
@@ -1497,6 +1529,68 @@ class GitDiffBranch {
 		$fileInfo.LastWriteTime = $commitDate
 
 		return $fileInfo
+	}
+
+	# Appends a top-10-by-churn markdown table to $lines.
+	hidden [Void] AppendChurnTable([System.Collections.Generic.List[string]]$lines, [GitDiffStat[]]$stats)
+	{
+		[GitDiffStat[]]$ranked = @($stats | Sort-Object -Descending -Property @{
+			Expression = { if($_.IsBinary) { -1 } else { $_.Insertions + $_.Deletions } }
+		})
+		[int]$total = $ranked.Length
+		[int]$binaryCount = @($ranked | Where-Object { $_.IsBinary }).Length
+		[int]$topN = [System.Math]::Min(10, $total)
+
+		$lines.Add("| Insertions | Deletions | File |")
+		$lines.Add("|-----------:|----------:|------|")
+		for([int]$i = 0; $i -lt $topN; $i++) {
+			[GitDiffStat]$s = $ranked[$i]
+			[string]$insCol = $(if($s.IsBinary) { "binary" } else { "+$($s.Insertions)" })
+			[string]$delCol = $(if($s.IsBinary) { "-" } else { "-$($s.Deletions)" })
+			[string]$pathCol = $s.FilePath
+			if(-not [string]::IsNullOrEmpty($s.OriginalFilePath)) {
+				$pathCol = "$($s.OriginalFilePath) → $($s.FilePath)"
+			}
+			$lines.Add("| $insCol | $delCol | $pathCol |")
+		}
+		$lines.Add("")
+		[string]$footer = "(Top $topN of $total files by churn"
+		if($binaryCount -gt 0) { $footer += "; $binaryCount binary file" + $(if($binaryCount -eq 1) { "" } else { "s" }) }
+		$footer += ".)"
+		$lines.Add($footer)
+	}
+
+	# Appends per-commit blocks with filtered touched-file lists to $lines.
+	hidden [Void] AppendCommitBlocks(
+		[System.Collections.Generic.List[string]]$lines,
+		[GitLogEntry[]]$log,
+		[System.Collections.Generic.HashSet[string]]$diffSet,
+		[int]$perCommitFilesCap)
+	{
+		[bool]$includePerCommitFiles = ($log.Length -le $perCommitFilesCap)
+		foreach($entry in $log) {
+			$lines.Add("- $entry")
+			if(-not $includePerCommitFiles) { continue }
+			[GitDiff[]]$touched = [GitTool]::GetCommitFiles($entry.Hash)
+			foreach($d in $touched) {
+				if($d.Status -eq [GitDiffStatus]::Unknown) { continue }
+				[string]$path = $d.FilePath
+				[string]$origPath = $d.OriginalFilePath
+				[bool]$inSet = $diffSet.Contains($path) -or
+					(-not [string]::IsNullOrEmpty($origPath) -and $diffSet.Contains($origPath))
+				if(-not $inSet) { continue }
+				[string]$statusChar = $d.Status.ToString().Substring(0, 1)
+				[string]$display = $path
+				if(-not [string]::IsNullOrEmpty($origPath) -and -not [string]::Equals($origPath, $path)) {
+					$display = "$origPath → $path"
+				}
+				$lines.Add("  - $statusChar  $display")
+			}
+		}
+		if(-not $includePerCommitFiles) {
+			$lines.Add("")
+			$lines.Add("_(Per-commit file lists suppressed: more than $perCommitFilesCap commits.)_")
+		}
 	}
 
 	[GitDiffFile[]] WriteThreeWayDiffFiles()
