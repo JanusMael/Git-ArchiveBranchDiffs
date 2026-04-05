@@ -2628,6 +2628,30 @@ if([GitTool]::IsShallowClone())
 	Write-Warn "This is a shallow clone; diff results and commit history may be incomplete"
 }
 
+# Preflight: communicate the ancestor relationship so users understand
+# what the archive will contain — or that they probably swapped their args.
+if(-not $workingTree -and -not $staged) {
+	[string]$leftHashPre  = [GitTool]::GetCommitHash($leftBranch)
+	[string]$rightHashPre = [GitTool]::GetCommitHash($rightBranch)
+	if(-not [string]::IsNullOrWhiteSpace($leftHashPre) -and -not [string]::IsNullOrWhiteSpace($rightHashPre)) {
+		if([string]::Equals($leftHashPre, $rightHashPre, [System.StringComparison]::OrdinalIgnoreCase)) {
+			Write-Host ""
+			Write-Host "  Left and right refer to the same commit — nothing to compare." -ForegroundColor Yellow
+			Write-Host ""
+			Pop-Location
+			return
+		}
+		if([GitTool]::IsAncestor($leftHashPre, $rightHashPre)) {
+			Write-Host "  '$leftBranch' is an ancestor of '$rightBranch'." -ForegroundColor Gray
+			Write-Host "  Archive will contain commits added on '$rightBranch' since '$leftBranch'." -ForegroundColor DarkGray
+		}
+		elseif([GitTool]::IsAncestor($rightHashPre, $leftHashPre)) {
+			Write-Host "  '$rightBranch' is an ancestor of '$leftBranch'." -ForegroundColor Yellow
+			Write-Host "  Consider swapping -leftBranch and -rightBranch." -ForegroundColor Gray
+		}
+	}
+}
+
 [System.IO.FileInfo]$archiveFile = $null
 if($workingTree) {
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
