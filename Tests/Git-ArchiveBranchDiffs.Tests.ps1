@@ -483,6 +483,30 @@ Describe "Git-ArchiveBranchDiffs" {
         }
     }
 
+    Describe "GitTool.GetCommitFiles" {
+
+        It "returns empty for null or empty hash" {
+            @([GitTool]::GetCommitFiles($null)).Count | Should -Be 0
+            @([GitTool]::GetCommitFiles("")).Count | Should -Be 0
+        }
+
+        It "returns empty for nonexistent commit" {
+            @([GitTool]::GetCommitFiles("0000000000000000000000000000000000000000")).Count | Should -Be 0
+        }
+
+        It "returns GitDiff entries for HEAD" {
+            $head = git rev-parse HEAD 2>$null
+            if($null -ne $head) {
+                $diffs = @([GitTool]::GetCommitFiles($head))
+                $diffs.Count | Should -BeGreaterThan 0
+                foreach($d in $diffs) {
+                    $d.GetType().Name | Should -Be "GitDiff"
+                    $d.FilePath | Should -Not -BeNullOrEmpty
+                }
+            }
+        }
+    }
+
     Describe "GitStatusEntry.Parse" {
 
         It "parses a modified-in-worktree entry" {

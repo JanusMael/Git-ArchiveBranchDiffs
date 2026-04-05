@@ -2219,6 +2219,25 @@ class GitTool {
 	static [GitLogEntry[]] GetLog([string]$range) { return [GitTool]::GetLog($range, 0, $null) }
 	static [GitLogEntry[]] GetLog([string]$range, [int]$limit) { return [GitTool]::GetLog($range, $limit, $null) }
 
+	# Returns [GitDiff] entries for the files touched by a single commit,
+	# relative to its first parent. Root commits (no parent) return every
+	# tracked file as Added.
+	static [GitDiff[]] GetCommitFiles([string]$commitHash) {
+		if([string]::IsNullOrWhiteSpace($commitHash)) { return @() }
+		# Use diff-tree against first parent (-m would show merges per-parent; we keep it simple).
+		# -r: recurse into subtrees; --no-commit-id: suppress the commit header line;
+		# --root: for root commits, show all files as additions.
+		[string[]]$lines = @(git --no-pager diff-tree -r --no-commit-id --name-status --root $commitHash 2>$null)
+		if($LASTEXITCODE -ne 0) { return @() }
+		[System.Collections.Generic.List[GitDiff]]$diffs = [System.Collections.Generic.List[GitDiff]]::new()
+		foreach($line in $lines) {
+			if([string]::IsNullOrWhiteSpace($line)) { continue }
+			[GitDiff]$diff = [GitDiff]::Parse($line)
+			if($null -ne $diff) { $diffs.Add($diff) }
+		}
+		return $diffs.ToArray()
+	}
+
 	# Returns [GitStatusEntry] objects, one per porcelain line.
 	# Honors --untracked-files=all so untracked items are individually listed.
 	static [GitStatusEntry[]] GetStatus() {
