@@ -1455,17 +1455,14 @@ class GitDiffBranch {
 
 		[string[]]$fileArgs = $filePaths.ToArray()
 
-		# Get commits on right branch that touched diff'd files
+		# Get structured commits on each side that touched diff'd files
 		[string]$rightBranchName = $this.RightBranch.Branch.BranchName
-		[object[]]$rightLog = @(git --no-pager log --format="%h %s (%an, %ai)" "$mergeBase..$rightHash" -- @fileArgs 2>$null)
-		if($LASTEXITCODE -ne 0) { $rightLog = @() }
+		[GitLogEntry[]]$rightLog = [GitTool]::GetLog("$mergeBase..$rightHash", 0, $fileArgs)
 
-		# Get commits on left branch that touched diff'd files
 		[string]$leftBranchName = $this.LeftBranch.Branch.BranchName
-		[object[]]$leftLog = @(git --no-pager log --format="%h %s (%an, %ai)" "$mergeBase..$leftHash" -- @fileArgs 2>$null)
-		if($LASTEXITCODE -ne 0) { $leftLog = @() }
+		[GitLogEntry[]]$leftLog = [GitTool]::GetLog("$mergeBase..$leftHash", 0, $fileArgs)
 
-		if($rightLog.Count -eq 0 -and $leftLog.Count -eq 0) { return $null }
+		if($rightLog.Length -eq 0 -and $leftLog.Length -eq 0) { return $null }
 
 		# Build history content
 		[System.Collections.Generic.List[string]]$lines = [System.Collections.Generic.List[string]]::new()
@@ -1474,17 +1471,17 @@ class GitDiffBranch {
 		$lines.Add("Merge-base: $mergeBaseShort")
 		$lines.Add("")
 
-		if($rightLog.Count -gt 0)
+		if($rightLog.Length -gt 0)
 		{
-			$lines.Add("## $rightBranchName ($($rightLog.Count) commits)")
+			$lines.Add("## $rightBranchName ($($rightLog.Length) commits)")
 			$lines.Add("")
 			foreach($entry in $rightLog) { $lines.Add("- $entry") }
 			$lines.Add("")
 		}
 
-		if($leftLog.Count -gt 0)
+		if($leftLog.Length -gt 0)
 		{
-			$lines.Add("## $leftBranchName ($($leftLog.Count) commits)")
+			$lines.Add("## $leftBranchName ($($leftLog.Length) commits)")
 			$lines.Add("")
 			foreach($entry in $leftLog) { $lines.Add("- $entry") }
 			$lines.Add("")
@@ -1754,6 +1751,51 @@ class GitStatusEntry {
 			return "$($this.IndexStatus)$($this.WorkTreeStatus) $($this.OriginalFilePath) -> $($this.FilePath)"
 		}
 		return "$($this.IndexStatus)$($this.WorkTreeStatus) $($this.FilePath)"
+	}
+}
+
+<# Structured commit metadata from `git log` #>
+class GitLogEntry {
+	[string]$Hash
+	[string]$ShortHash
+	[string]$AuthorName
+	[string]$AuthorEmail
+	[System.DateTimeOffset]$AuthorDate
+	[string]$Subject
+
+	GitLogEntry([string]$hash, [string]$shortHash, [string]$authorName, [string]$authorEmail, [System.DateTimeOffset]$authorDate, [string]$subject) {
+		$this.Hash = $hash
+		$this.ShortHash = $shortHash
+		$this.AuthorName = $authorName
+		$this.AuthorEmail = $authorEmail
+		$this.AuthorDate = $authorDate
+		$this.Subject = $subject
+	}
+
+	# Parses a single git-log line formatted with FieldSeparator-separated columns.
+	# Expected fields: hash, shortHash, author name, author email, author date (ISO 8601), subject.
+	static [string] $FieldSeparator = [char]0x1f  # ASCII Unit Separator
+
+	# Builds the --format argument string that produces one line per commit
+	# with fields separated by FieldSeparator. Matches the fields consumed by Parse().
+	static [string] GetLogFormat() {
+		[string]$fs = [GitLogEntry]::FieldSeparator
+		return "%H$fs%h$fs%an$fs%ae$fs%aI$fs%s"
+	}
+
+	static [GitLogEntry] Parse([string]$line) {
+		if([string]::IsNullOrEmpty($line)) { return $null }
+		[string[]]$parts = $line.Split([GitLogEntry]::FieldSeparator)
+		if($parts.Length -lt 6) { return $null }
+		[System.DateTimeOffset]$dto = [System.DateTimeOffset]::MinValue
+		if(-not [System.DateTimeOffset]::TryParse($parts[4], [ref]$dto)) {
+			$dto = [System.DateTimeOffset]::MinValue
+		}
+		return [GitLogEntry]::new($parts[0], $parts[1], $parts[2], $parts[3], $dto, $parts[5])
+	}
+
+	[string] ToString() {
+		return "$($this.ShortHash) $($this.Subject) ($($this.AuthorName), $($this.AuthorDate.ToString('yyyy-MM-dd HH:mm:ss zzz')))"
 	}
 }
 
@@ -2148,6 +2190,34 @@ class GitTool {
 		if($LASTEXITCODE -ne 0) { return @() }
 		return @($result | Where-Object { $_.Length -gt 0 })
 	}
+
+	# Returns structured commits for the given range (e.g. "A..B", "HEAD", a branch name).
+	# $limit of 0 or less means "no limit". $paths is an optional path filter.
+	static [GitLogEntry[]] GetLog([string]$range, [int]$limit, [string[]]$paths) {
+		if([string]::IsNullOrWhiteSpace($range)) { return @() }
+		[System.Collections.Generic.List[string]]$gitArgs = [System.Collections.Generic.List[string]]::new()
+		$gitArgs.Add("--no-pager")
+		$gitArgs.Add("log")
+		$gitArgs.Add("--format=" + [GitLogEntry]::GetLogFormat())
+		if($limit -gt 0) { $gitArgs.Add("-n"); $gitArgs.Add("$limit") }
+		$gitArgs.Add($range)
+		if($null -ne $paths -and $paths.Length -gt 0) {
+			$gitArgs.Add("--")
+			foreach($p in $paths) { $gitArgs.Add($p) }
+		}
+		[string[]]$lines = @(git @gitArgs 2>$null)
+		if($LASTEXITCODE -ne 0) { return @() }
+		[System.Collections.Generic.List[GitLogEntry]]$entries = [System.Collections.Generic.List[GitLogEntry]]::new()
+		foreach($line in $lines) {
+			[GitLogEntry]$e = [GitLogEntry]::Parse($line)
+			if($null -ne $e) { $entries.Add($e) }
+		}
+		return $entries.ToArray()
+	}
+
+	# Convenience overloads.
+	static [GitLogEntry[]] GetLog([string]$range) { return [GitTool]::GetLog($range, 0, $null) }
+	static [GitLogEntry[]] GetLog([string]$range, [int]$limit) { return [GitTool]::GetLog($range, $limit, $null) }
 
 	# Returns [GitStatusEntry] objects, one per porcelain line.
 	# Honors --untracked-files=all so untracked items are individually listed.

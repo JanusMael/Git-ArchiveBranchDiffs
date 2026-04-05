@@ -409,6 +409,80 @@ Describe "Git-ArchiveBranchDiffs" {
         }
     }
 
+    Describe "GitLogEntry.Parse" {
+
+        It "parses a well-formed log line" {
+            $fs = [GitLogEntry]::FieldSeparator
+            $line = "abcdef1234567890abcdef1234567890abcdef12${fs}abcdef1${fs}Jane Doe${fs}jane@example.com${fs}2024-01-15T10:30:00+00:00${fs}Initial commit"
+            $entry = [GitLogEntry]::Parse($line)
+            $entry | Should -Not -BeNullOrEmpty
+            $entry.Hash | Should -Be "abcdef1234567890abcdef1234567890abcdef12"
+            $entry.ShortHash | Should -Be "abcdef1"
+            $entry.AuthorName | Should -Be "Jane Doe"
+            $entry.AuthorEmail | Should -Be "jane@example.com"
+            $entry.Subject | Should -Be "Initial commit"
+            $entry.AuthorDate.Year | Should -Be 2024
+        }
+
+        It "returns null for empty input" {
+            [GitLogEntry]::Parse("") | Should -BeNullOrEmpty
+            [GitLogEntry]::Parse($null) | Should -BeNullOrEmpty
+        }
+
+        It "returns null for malformed input (too few fields)" {
+            [GitLogEntry]::Parse("only one field") | Should -BeNullOrEmpty
+        }
+
+        It "falls back to DateTimeOffset.MinValue for unparseable dates" {
+            $fs = [GitLogEntry]::FieldSeparator
+            $line = "h${fs}h${fs}n${fs}e${fs}not-a-date${fs}subj"
+            $entry = [GitLogEntry]::Parse($line)
+            $entry | Should -Not -BeNullOrEmpty
+            $entry.AuthorDate | Should -Be ([System.DateTimeOffset]::MinValue)
+        }
+
+        It "GetLogFormat contains field separators" {
+            $fmt = [GitLogEntry]::GetLogFormat()
+            $fmt | Should -Match "%H"
+            $fmt | Should -Match "%h"
+            $fmt | Should -Match "%an"
+            $fmt | Should -Match "%ae"
+            $fmt | Should -Match "%aI"
+            $fmt | Should -Match "%s"
+        }
+
+        It "ToString includes hash and subject" {
+            $fs = [GitLogEntry]::FieldSeparator
+            $line = "abc${fs}abc${fs}Jane${fs}j@e.com${fs}2024-01-15T10:30:00+00:00${fs}Fix bug"
+            $entry = [GitLogEntry]::Parse($line)
+            $entry.ToString() | Should -Match "abc"
+            $entry.ToString() | Should -Match "Fix bug"
+        }
+    }
+
+    Describe "GitTool.GetLog" {
+
+        It "returns an empty array for empty range" {
+            $result = @([GitTool]::GetLog(""))
+            $result.Count | Should -Be 0
+        }
+
+        It "returns entries for HEAD with a limit" {
+            $result = @([GitTool]::GetLog("HEAD", 3))
+            $result.Count | Should -BeLessOrEqual 3
+            $result.Count | Should -BeGreaterThan 0
+            $result[0].Hash.Length | Should -Be 40
+            $result[0].ShortHash.Length | Should -BeGreaterOrEqual 4
+        }
+
+        It "respects path filter" {
+            $unfiltered = @([GitTool]::GetLog("HEAD", 10, $null))
+            $filtered = @([GitTool]::GetLog("HEAD", 10, @("nonexistent-xyzzy-file.txt")))
+            $filtered.Count | Should -Be 0
+            $unfiltered.Count | Should -BeGreaterThan 0
+        }
+    }
+
     Describe "GitStatusEntry.Parse" {
 
         It "parses a modified-in-worktree entry" {
