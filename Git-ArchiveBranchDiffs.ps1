@@ -2460,13 +2460,19 @@ if($nonInteractive)
 	# Non-interactive mode: use smart defaults
 	if([string]::IsNullOrWhiteSpace($repositoryPath))
 	{
-		if([GitTool]::IsGitRoot($currentDirectory.FullName))
+		# Prefer git's own upward walk so the script works from any subdirectory.
+		[string]$discoveredRoot = [GitTool]::GetRepoRoot()
+		if(-not [string]::IsNullOrWhiteSpace($discoveredRoot))
+		{
+			$repositoryPath = $discoveredRoot
+		}
+		elseif([GitTool]::IsGitRoot($currentDirectory.FullName))
 		{
 			$repositoryPath = $currentDirectory.FullName
 		}
 		else
 		{
-			Write-Fail "Current directory is not a git repository root. Specify -repositoryPath."
+			Write-Fail "Not inside a git repository. Specify -repositoryPath."
 		}
 	}
 }
@@ -2474,15 +2480,25 @@ else
 {
 	if([string]::IsNullOrWhiteSpace($repositoryPath))
 	{
-		if(-not [string]::Equals($currentDirectory.FullName, $PSScriptRoot, [System.StringComparison]::InvariantCultureIgnoreCase) -and
-		   [GitTool]::IsGitRoot($currentDirectory.FullName))
+		# Compute candidate via git's upward walk first, so subdirectory launches work.
+		[string]$discoveredRoot = [GitTool]::GetRepoRoot()
+		[string]$candidate = $null
+		if(-not [string]::IsNullOrWhiteSpace($discoveredRoot)) {
+			$candidate = $discoveredRoot
+		}
+		elseif([GitTool]::IsGitRoot($currentDirectory.FullName)) {
+			$candidate = [System.IO.Path]::GetFullPath($currentDirectory)
+		}
+
+		if(-not [string]::IsNullOrWhiteSpace($candidate) -and
+		   -not [string]::Equals($candidate, $PSScriptRoot, [System.StringComparison]::InvariantCultureIgnoreCase))
 		{
-			$useCurrentDirectory = Read-Prompt "Use '$currentDirectory' as the git repository root? (Y/N)"
+			$useCurrentDirectory = Read-Prompt "Use '$candidate' as the git repository root? (Y/N)"
 
 			if([string]::Equals($useCurrentDirectory, "Y", [System.StringComparison]::InvariantCultureIgnoreCase) -or
 			[string]::Equals($useCurrentDirectory, "YES", [System.StringComparison]::InvariantCultureIgnoreCase))
 			{
-				$repositoryPath = [System.IO.Path]::GetFullPath($currentDirectory)
+				$repositoryPath = $candidate
 			}
 		}
 
