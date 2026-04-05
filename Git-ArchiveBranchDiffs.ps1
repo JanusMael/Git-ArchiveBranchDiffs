@@ -2284,6 +2284,19 @@ class GitTool {
 		return $diffs.ToArray()
 	}
 
+	# Returns the unified-diff text for a single file between two revisions.
+	# Returns an empty string if the file is unchanged (or input is empty/invalid).
+	static [string] GetFileDiff([string]$left, [string]$right, [string]$filePath) {
+		if([string]::IsNullOrWhiteSpace($left) -or
+		   [string]::IsNullOrWhiteSpace($right) -or
+		   [string]::IsNullOrWhiteSpace($filePath)) {
+			return ""
+		}
+		[string[]]$lines = @(git --no-pager diff $left $right -- $filePath 2>$null)
+		if($LASTEXITCODE -ne 0 -or $null -eq $lines) { return "" }
+		return [string]::Join([System.Environment]::NewLine, $lines)
+	}
+
 	# Returns per-file insertion/deletion counts between two revisions.
 	# Accepts "A..B" range or two separate refs via DiffStat(left, right).
 	static [GitDiffStat[]] GetDiffStat([string]$left, [string]$right) {

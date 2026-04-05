@@ -483,6 +483,37 @@ Describe "Git-ArchiveBranchDiffs" {
         }
     }
 
+    Describe "GitTool.GetFileDiff" {
+
+        It "returns empty string for empty inputs" {
+            [GitTool]::GetFileDiff("", "HEAD", "x.txt") | Should -Be ""
+            [GitTool]::GetFileDiff("HEAD", "", "x.txt") | Should -Be ""
+            [GitTool]::GetFileDiff("HEAD", "HEAD", "") | Should -Be ""
+        }
+
+        It "returns empty string when comparing HEAD to itself" {
+            [GitTool]::GetFileDiff("HEAD", "HEAD", "Git-ArchiveBranchDiffs.ps1") | Should -Be ""
+        }
+
+        It "returns empty string for a path that does not exist" {
+            [GitTool]::GetFileDiff("HEAD~1", "HEAD", "definitely-not-a-real-file-xyzzy.txt") | Should -Be ""
+        }
+
+        It "returns unified diff text for a changed file" {
+            $parent = git rev-parse "HEAD~1" 2>$null
+            if($LASTEXITCODE -eq 0 -and $null -ne $parent) {
+                # Find any file changed in the last commit
+                $stats = @([GitTool]::GetDiffStat("HEAD~1", "HEAD"))
+                if($stats.Count -gt 0) {
+                    $path = $stats[0].FilePath
+                    $diff = [GitTool]::GetFileDiff("HEAD~1", "HEAD", $path)
+                    $diff | Should -Not -BeNullOrEmpty
+                    $diff | Should -Match "diff --git"
+                }
+            }
+        }
+    }
+
     Describe "GitDiffStat.Parse" {
 
         It "parses a text file stat line" {
