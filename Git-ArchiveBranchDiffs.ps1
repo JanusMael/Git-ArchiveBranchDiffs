@@ -180,23 +180,9 @@ Function Get-GitCompletionCandidates {
     )
     [System.Collections.Generic.List[string]]$results = [System.Collections.Generic.List[string]]::new()
 
-    # Branches
-    [string[]]$branches = @(git branch -a --format='%(refname:short)' 2>$null)
-    foreach($b in $branches) {
-        if($b.Length -gt 0) { $results.Add($b) }
-    }
-
-    # Tags
-    [string[]]$tags = @(git tag --list 2>$null)
-    foreach($t in $tags) {
-        if($t.Length -gt 0) { $results.Add($t) }
-    }
-
-    # Stashes
-    [string[]]$stashes = @(git stash list --format='%gd' 2>$null)
-    foreach($s in $stashes) {
-        if($s.Length -gt 0) { $results.Add($s) }
-    }
+    foreach($b in [GitTool]::GetBranches($true)) { $results.Add($b) }
+    foreach($t in [GitTool]::GetTags())           { $results.Add($t) }
+    foreach($s in [GitTool]::GetStashes())        { $results.Add($s) }
 
     if($wordToComplete.Length -gt 0) {
         return @($results | Where-Object {
@@ -1714,6 +1700,63 @@ class GitDiffBranch {
 	}
 }
 
+<# Single porcelain status entry from `git status --porcelain=v1` #>
+class GitStatusEntry {
+	[string]$IndexStatus    # single char: staged/index status (or '?' untracked, '!' ignored)
+	[string]$WorkTreeStatus # single char: working-tree status
+	[string]$FilePath
+	[string]$OriginalFilePath # populated for renames/copies (source path)
+
+	GitStatusEntry([string]$indexStatus, [string]$workTreeStatus, [string]$filePath, [string]$originalFilePath) {
+		$this.IndexStatus = $indexStatus
+		$this.WorkTreeStatus = $workTreeStatus
+		$this.FilePath = $filePath
+		$this.OriginalFilePath = $originalFilePath
+	}
+
+	# Parses a single porcelain v1 line. Returns $null for malformed input.
+	# Format: XY <path>   or   XY <orig> -> <new>   (rename/copy)
+	static [GitStatusEntry] Parse([string]$line) {
+		if($null -eq $line -or $line.Length -lt 4) { return $null }
+		[string]$x = $line.Substring(0, 1)
+		[string]$y = $line.Substring(1, 1)
+		[string]$rest = $line.Substring(3)
+		[string]$orig = $null
+		[string]$path = $rest
+		[int]$arrowIdx = $rest.IndexOf(" -> ")
+		if($arrowIdx -ge 0) {
+			$orig = $rest.Substring(0, $arrowIdx)
+			$path = $rest.Substring($arrowIdx + 4)
+		}
+		return [GitStatusEntry]::new($x, $y, $path, $orig)
+	}
+
+	[bool] IsStaged() {
+		return ($this.IndexStatus -ne " " -and $this.IndexStatus -ne "?" -and $this.IndexStatus -ne "!")
+	}
+
+	[bool] IsModifiedInWorkTree() {
+		return ($this.WorkTreeStatus -ne " " -and $this.WorkTreeStatus -ne "?" -and $this.WorkTreeStatus -ne "!")
+	}
+
+	[bool] IsUntracked() {
+		return ($this.IndexStatus -eq "?" -and $this.WorkTreeStatus -eq "?")
+	}
+
+	[bool] IsConflicted() {
+		# Conflict codes: DD, AU, UD, UA, DU, AA, UU
+		[string]$xy = $this.IndexStatus + $this.WorkTreeStatus
+		return ($xy -eq "DD" -or $xy -eq "AU" -or $xy -eq "UD" -or $xy -eq "UA" -or $xy -eq "DU" -or $xy -eq "AA" -or $xy -eq "UU")
+	}
+
+	[string] ToString() {
+		if(-not [string]::IsNullOrEmpty($this.OriginalFilePath)) {
+			return "$($this.IndexStatus)$($this.WorkTreeStatus) $($this.OriginalFilePath) -> $($this.FilePath)"
+		}
+		return "$($this.IndexStatus)$($this.WorkTreeStatus) $($this.FilePath)"
+	}
+}
+
 <# wrapper around select `git <command>` #>
 class GitTool {
 	static [GitDiff[]] GitDiff() {
@@ -2060,6 +2103,64 @@ class GitTool {
 	static [bool] IsShallowClone() {
 		[string]$result = git rev-parse --is-shallow-repository 2>$null
 		return ($result -eq "true")
+	}
+
+	# Returns true if $ancestor is an ancestor commit of $descendant.
+	static [bool] IsAncestor([string]$ancestor, [string]$descendant) {
+		if([string]::IsNullOrWhiteSpace($ancestor) -or [string]::IsNullOrWhiteSpace($descendant)) {
+			return $false
+		}
+		git merge-base --is-ancestor $ancestor $descendant 2>$null
+		return ($LASTEXITCODE -eq 0)
+	}
+
+	# Returns the absolute path of the repo root, or $null if not in a git repo.
+	static [string] GetRepoRoot() {
+		[string]$root = git rev-parse --show-toplevel 2>$null
+		if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($root)) {
+			return $null
+		}
+		return $root.Trim()
+	}
+
+	# Returns local + remote branch names (as seen by git tab-completion).
+	static [string[]] GetBranches([bool]$includeRemotes) {
+		[string[]]$result = $null
+		if($includeRemotes) {
+			$result = @(git branch -a --format='%(refname:short)' 2>$null)
+		} else {
+			$result = @(git branch --format='%(refname:short)' 2>$null)
+		}
+		if($LASTEXITCODE -ne 0) { return @() }
+		return @($result | Where-Object { $_.Length -gt 0 })
+	}
+
+	# Returns all tag names in the repository.
+	static [string[]] GetTags() {
+		[string[]]$result = @(git tag --list 2>$null)
+		if($LASTEXITCODE -ne 0) { return @() }
+		return @($result | Where-Object { $_.Length -gt 0 })
+	}
+
+	# Returns stash references in the form "stash@{N}".
+	static [string[]] GetStashes() {
+		[string[]]$result = @(git stash list --format='%gd' 2>$null)
+		if($LASTEXITCODE -ne 0) { return @() }
+		return @($result | Where-Object { $_.Length -gt 0 })
+	}
+
+	# Returns [GitStatusEntry] objects, one per porcelain line.
+	# Honors --untracked-files=all so untracked items are individually listed.
+	static [GitStatusEntry[]] GetStatus() {
+		[string[]]$lines = @(git status --porcelain=v1 --untracked-files=all 2>$null)
+		if($LASTEXITCODE -ne 0) { return @() }
+		[System.Collections.Generic.List[GitStatusEntry]]$entries = [System.Collections.Generic.List[GitStatusEntry]]::new()
+		foreach($line in $lines) {
+			if($line.Length -lt 4) { continue }
+			[GitStatusEntry]$entry = [GitStatusEntry]::Parse($line)
+			if($null -ne $entry) { $entries.Add($entry) }
+		}
+		return $entries.ToArray()
 	}
 
 	static [byte[]] GetFileContent([string]$branchOrRevision, [string]$repoFilePath)

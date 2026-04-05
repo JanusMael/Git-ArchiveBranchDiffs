@@ -347,6 +347,143 @@ Describe "Git-ArchiveBranchDiffs" {
         }
     }
 
+    Describe "GitTool.IsAncestor" {
+
+        It "returns false for empty inputs" {
+            [GitTool]::IsAncestor("", "HEAD") | Should -BeFalse
+            [GitTool]::IsAncestor("HEAD", "") | Should -BeFalse
+        }
+
+        It "returns true when ancestor equals descendant (reflexive)" {
+            $head = git rev-parse HEAD 2>$null
+            if($null -ne $head) {
+                [GitTool]::IsAncestor($head, $head) | Should -BeTrue
+            }
+        }
+
+        It "returns false for nonexistent commits" {
+            [GitTool]::IsAncestor("0000000000000000000000000000000000000000", "HEAD") | Should -BeFalse
+        }
+    }
+
+    Describe "GitTool.GetRepoRoot" {
+
+        It "returns a non-empty path when inside a git repo" {
+            $result = [GitTool]::GetRepoRoot()
+            $result | Should -Not -BeNullOrEmpty
+            Test-Path $result | Should -BeTrue
+        }
+    }
+
+    Describe "GitTool.GetBranches" {
+
+        It "returns an array including the current branch" {
+            $branches = [GitTool]::GetBranches($false)
+            $branches | Should -Not -BeNullOrEmpty
+            $current = git rev-parse --abbrev-ref HEAD 2>$null
+            if($null -ne $current -and $current -ne "HEAD") {
+                $branches | Should -Contain $current
+            }
+        }
+
+        It "includes remote branches when includeRemotes is true" {
+            $local = @([GitTool]::GetBranches($false))
+            $all = @([GitTool]::GetBranches($true))
+            $all.Count | Should -BeGreaterOrEqual $local.Count
+        }
+    }
+
+    Describe "GitTool.GetTags" {
+
+        It "returns an array (possibly empty)" {
+            $result = [GitTool]::GetTags()
+            ,$result | Should -BeOfType [System.Array]
+        }
+    }
+
+    Describe "GitTool.GetStashes" {
+
+        It "returns an array (possibly empty)" {
+            $result = [GitTool]::GetStashes()
+            ,$result | Should -BeOfType [System.Array]
+        }
+    }
+
+    Describe "GitStatusEntry.Parse" {
+
+        It "parses a modified-in-worktree entry" {
+            $entry = [GitStatusEntry]::Parse(" M src/file.txt")
+            $entry.IndexStatus | Should -Be " "
+            $entry.WorkTreeStatus | Should -Be "M"
+            $entry.FilePath | Should -Be "src/file.txt"
+            $entry.OriginalFilePath | Should -BeNullOrEmpty
+        }
+
+        It "parses a staged-added entry" {
+            $entry = [GitStatusEntry]::Parse("A  new.txt")
+            $entry.IndexStatus | Should -Be "A"
+            $entry.WorkTreeStatus | Should -Be " "
+            $entry.IsStaged() | Should -BeTrue
+        }
+
+        It "parses a rename entry" {
+            $entry = [GitStatusEntry]::Parse("R  old.txt -> new.txt")
+            $entry.IndexStatus | Should -Be "R"
+            $entry.OriginalFilePath | Should -Be "old.txt"
+            $entry.FilePath | Should -Be "new.txt"
+        }
+
+        It "parses an untracked entry" {
+            $entry = [GitStatusEntry]::Parse("?? unknown.txt")
+            $entry.IsUntracked() | Should -BeTrue
+            $entry.IsStaged() | Should -BeFalse
+        }
+
+        It "detects conflicts (UU)" {
+            $entry = [GitStatusEntry]::Parse("UU conflict.txt")
+            $entry.IsConflicted() | Should -BeTrue
+        }
+
+        It "detects conflicts (AA)" {
+            $entry = [GitStatusEntry]::Parse("AA both-added.txt")
+            $entry.IsConflicted() | Should -BeTrue
+        }
+
+        It "does not flag a plain modification as conflict" {
+            $entry = [GitStatusEntry]::Parse(" M file.txt")
+            $entry.IsConflicted() | Should -BeFalse
+        }
+
+        It "returns null for too-short lines" {
+            [GitStatusEntry]::Parse("ab") | Should -BeNullOrEmpty
+        }
+
+        It "returns null for null input" {
+            [GitStatusEntry]::Parse($null) | Should -BeNullOrEmpty
+        }
+
+        It "ToString round-trips a basic entry" {
+            $entry = [GitStatusEntry]::Parse(" M src/file.txt")
+            $entry.ToString() | Should -Be " M src/file.txt"
+        }
+
+        It "ToString includes rename arrow" {
+            $entry = [GitStatusEntry]::Parse("R  old.txt -> new.txt")
+            $entry.ToString() | Should -Be "R  old.txt -> new.txt"
+        }
+    }
+
+    Describe "GitTool.GetStatus" {
+
+        It "returns an array of GitStatusEntry" {
+            $result = [GitTool]::GetStatus()
+            ,$result | Should -BeOfType [System.Array]
+            foreach($entry in $result) {
+                $entry.GetType().Name | Should -Be "GitStatusEntry"
+            }
+        }
+    }
+
     Describe "TempDirectoryScope" {
 
         It "creates a temp directory that exists" {
