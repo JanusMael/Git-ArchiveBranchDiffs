@@ -30,6 +30,19 @@
     repositoryPath defaults to current directory, leftBranch to the default remote branch,
     rightBranch to the currently checked-out branch, outputDirectory to current directory.
 
+    .PARAMETER workingTree
+    [Optional] Compare uncommitted working tree changes against the left branch.
+    Mutually exclusive with -staged and -rightBranch.
+
+    .PARAMETER staged
+    [Optional] Compare staged (indexed) changes against the left branch.
+    Mutually exclusive with -workingTree and -rightBranch.
+
+    .PARAMETER threeWay
+    [Optional] Produce a three-way diff with base, left, and right directories.
+    Shows what each side changed relative to the merge-base.
+    Mutually exclusive with -workingTree and -staged.
+
     .EXAMPLE
     PS> ./Git-ArchiveBranchDiffs.ps1 -repositoryPath /c/myRepo -leftBranch master -rightBranch f/myBranch -outputDirectory /tmp
 
@@ -53,7 +66,7 @@ Param (
 		if([string]::IsNullOrWhiteSpace($repoPath)) { $repoPath = (Get-Location).Path }
 		if(Test-Path (Join-Path $repoPath ".git")) {
 			Push-Location $repoPath
-			try { git branch -a --format='%(refname:short)' 2>$null | Where-Object { $_ -like "$wordToComplete*" } }
+			try { Get-GitCompletionCandidates $wordToComplete }
 			finally { Pop-Location }
 		}
 	})]
@@ -66,7 +79,7 @@ Param (
 		if([string]::IsNullOrWhiteSpace($repoPath)) { $repoPath = (Get-Location).Path }
 		if(Test-Path (Join-Path $repoPath ".git")) {
 			Push-Location $repoPath
-			try { git branch -a --format='%(refname:short)' 2>$null | Where-Object { $_ -like "$wordToComplete*" } }
+			try { Get-GitCompletionCandidates $wordToComplete }
 			finally { Pop-Location }
 		}
 	})]
@@ -79,7 +92,16 @@ Param (
 	[string]$archiveFileName = $null,
 
 	[parameter(Mandatory=$false)]
-	[switch]$nonInteractive
+	[switch]$nonInteractive,
+
+	[parameter(Mandatory=$false)]
+	[switch]$workingTree,
+
+	[parameter(Mandatory=$false)]
+	[switch]$staged,
+
+	[parameter(Mandatory=$false)]
+	[switch]$threeWay
 )
 
 Set-StrictMode -Version Latest
@@ -148,6 +170,40 @@ Function Get-PathCompletions {
             else { [System.IO.Path]::Combine($directory, $_.Name) }
         })
     return $matches
+}
+
+Function Get-GitCompletionCandidates {
+    [OutputType([string[]])]
+    Param (
+        [Parameter(Mandatory=$false)]
+        [string]$wordToComplete = ""
+    )
+    [System.Collections.Generic.List[string]]$results = [System.Collections.Generic.List[string]]::new()
+
+    # Branches
+    [string[]]$branches = @(git branch -a --format='%(refname:short)' 2>$null)
+    foreach($b in $branches) {
+        if($b.Length -gt 0) { $results.Add($b) }
+    }
+
+    # Tags
+    [string[]]$tags = @(git tag --list 2>$null)
+    foreach($t in $tags) {
+        if($t.Length -gt 0) { $results.Add($t) }
+    }
+
+    # Stashes
+    [string[]]$stashes = @(git stash list --format='%gd' 2>$null)
+    foreach($s in $stashes) {
+        if($s.Length -gt 0) { $results.Add($s) }
+    }
+
+    if($wordToComplete.Length -gt 0) {
+        return @($results | Where-Object {
+            $_.StartsWith($wordToComplete, [System.StringComparison]::InvariantCultureIgnoreCase)
+        })
+    }
+    return $results.ToArray()
 }
 
 Function Read-PromptWithCompletion {
@@ -847,6 +903,13 @@ enum DiffComparand
 	Right
 	Manifest # bookkeeping files added in addition to the files participating in the diff
 }
+
+enum RevisionKind
+{
+	Commit    # normal branch/tag/hash — has CommitHash and CommitDate
+	WorkTree  # uncommitted working directory
+	Staged    # staged index (git add'd but not committed)
+}
 #endregion Enums
 
 <# model of line items returned by `git diff` #>
@@ -989,43 +1052,72 @@ class GitBranch {
 		if([string]::IsNullOrWhiteSpace($branchName)) {
 			Write-Fail "branchName should not be null"
 		}
+		$this.Kind = [RevisionKind]::Commit
 		$this.BranchName = $branchName
 		$this.RemoteName = [GitTool]::GetRemoteName()
 		$this.ResolveLocalOrRemoteCommit($this.RemoteName, $this.BranchName)
 		$this.RemoteUrl = [GitTool]::GetRemoteUrl()
 		$this.CommitDate = [GitTool]::GetCommitDate($this.BranchName)
 	}
+
+	static [GitBranch] ForWorkTree() {
+		[GitBranch]$branch = [GitBranch]::CreateSpecial("WORKING-TREE", [RevisionKind]::WorkTree)
+		return $branch
+	}
+
+	static [GitBranch] ForStaged() {
+		[GitBranch]$branch = [GitBranch]::CreateSpecial("STAGED", [RevisionKind]::Staged)
+		return $branch
+	}
+
+	hidden static [GitBranch] CreateSpecial([string]$name, [RevisionKind]$kind) {
+		# Use default constructor bypass via PSObject trick — set fields manually
+		[GitBranch]$branch = [System.Runtime.Serialization.FormatterServices]::GetUninitializedObject([GitBranch])
+		$branch.Kind = $kind
+		$branch.BranchName = $name
+		$branch.CommitHash = $null
+		$branch.CommitDate = [System.DateTimeOffset]::Now
+		$branch.RemoteName = ""
+		$branch.RemoteUrl = ""
+		return $branch
+	}
+
+	[RevisionKind]$Kind
 	[string]$BranchName
 	[string]$CommitHash
 	[System.DateTimeOffset]$CommitDate
 	[string]$RemoteName
 	[string]$RemoteUrl
 
-	hidden [void] ResolveLocalOrRemoteCommit([string]$remoteName, [string]$branchName) 
+	hidden [void] ResolveLocalOrRemoteCommit([string]$remoteName, [string]$branchName)
 	{
 		$this.CommitHash = [GitTool]::GetCommitHash($branchName)
 
 		if([string]::IsNullOrWhiteSpace($this.CommitHash))
 		{
-			if($this.IsLocalBranch())
+			if($this.IsLocalBranch() -and -not [string]::IsNullOrWhiteSpace($remoteName))
 			{
 				[string]$remoteBranch = $remoteName + "/" + $branchName
-				$this.CommitHash = git rev-parse $remoteBranch
-				if([string]::Equals($this.CommitHash, $remoteBranch))
+				$this.CommitHash = git rev-parse $remoteBranch 2>$null
+				if($LASTEXITCODE -ne 0 -or [string]::Equals($this.CommitHash, $remoteBranch))
 				{
 					$this.CommitHash = $null
 				}
-				else 
+				else
 				{
 					Write-Warn "Did not find local branch '$branchName' but will use remote branch '$remoteBranch'"
 					$this.BranchName = $remoteBranch
 				}
 			}
-			
+
 			if([string]::IsNullOrWhiteSpace($this.CommitHash))
 			{
 				Write-Warn "branch '$($this.BranchName)' not found, defaulting to 'HEAD'"
-				$this.CommitHash = git rev-parse "HEAD"
+				$this.CommitHash = git rev-parse "HEAD" 2>$null
+				if($LASTEXITCODE -ne 0)
+				{
+					Write-Fail "Could not resolve HEAD; is this a valid git repository?"
+				}
 			}
 		}
 	}
@@ -1039,31 +1131,45 @@ class GitBranch {
 		return $true
 	}
 
-	[string] GetDirectorySafeName() 
+	[string] GetDirectorySafeName()
 	{
-		return $this.BranchName.Replace("\\","_").Replace("/", "_")
+		return $this.BranchName.Replace("\\","_").Replace("/", "_").Replace("~","_").Replace("^","_").Replace("@","_").Replace("{","_").Replace("}","_")
 	}
 
 	[byte[]] GetFileContent([string]$repoFilePath)
 	{
+		if($this.Kind -eq [RevisionKind]::WorkTree) {
+			[string]$fullPath = [System.IO.Path]::GetFullPath($repoFilePath)
+			if([System.IO.File]::Exists($fullPath)) {
+				return [System.IO.File]::ReadAllBytes($fullPath)
+			}
+			return $null
+		}
+		if($this.Kind -eq [RevisionKind]::Staged) {
+			return [GitTool]::GetFileContent("", $repoFilePath)
+		}
 		return [GitTool]::GetFileContent($this.BranchName, $repoFilePath)
 	}
 
 	[string] GetTimestamp() {
+		if($this.Kind -ne [RevisionKind]::Commit) {
+			return "(uncommitted)"
+		}
 		return $(Get-DateTimeAndZone $($this.CommitDate))
 	}
 
 	[string] ToString() {
-		return $this.BranchName.ToString() + " (" + $this.CommitHash.ToString() + ")" + " [" + $this.RemoteUrl.ToString() + "]" 
+		if($this.Kind -ne [RevisionKind]::Commit) {
+			return $this.BranchName
+		}
+		return $this.BranchName.ToString() + " (" + $this.CommitHash.ToString() + ")" + " [" + $this.RemoteUrl.ToString() + "]"
 	}
 }
 
 <# model containing the left/right files for single diff comprised of real file blobs and/or token files #>
 class GitDiffFile {
 	GitDiffFile([GitDiff]$diff, [System.IO.FileInfo]$leftFile, [System.IO.FileInfo]$rightFile) {
-		if($null -eq $diff) {
-			Write-Fail "diff should not be null"
-		}
+		# diff may be null in three-way mode
 		if($null -eq $leftFile) {
 			Write-Fail "left file should not be null"
 		}
@@ -1203,9 +1309,9 @@ class GitDiffBranch {
 		$this.Ctor($leftBranchName, $rightBranchName)
 	}
 
-    hidden Ctor([string]$leftBranchName, [string]$rightBranchName) 
-	{ 
-		$this.Ctor([GitBranch]::new($leftBranchName), [GitBranch]::new($rightBranchName)) 
+    hidden Ctor([string]$leftBranchName, [string]$rightBranchName)
+	{
+		$this.Ctor([GitBranch]::new($leftBranchName), [GitBranch]::new($rightBranchName))
 	}
     hidden Ctor([GitBranch]$leftBranch, [GitBranch]$rightBranch) {
 		if($null -eq $leftBranch) {
@@ -1214,14 +1320,36 @@ class GitDiffBranch {
 		if($null -eq $rightBranch) {
 			Write-Fail "rightBranch should not be null"
 		}
+		$this.ThreeWayMode = $false
 		$this.RootDirectory = $script:Temp.GetSubDirectory($null)
 
 		$this.LeftBranch = [GitBranchDirectory]::new($this.RootDirectory, $leftBranch, $this.RootDirectory.CreateSubdirectory($leftBranch.GetDirectorySafeName()))
 		$this.RightBranch = [GitBranchDirectory]::new($this.RootDirectory, $rightBranch, $this.RootDirectory.CreateSubdirectory($rightBranch.GetDirectorySafeName()))
 	}
-	
+
+	static [GitDiffBranch] ForThreeWay([string]$leftBranchName, [string]$rightBranchName) {
+		[GitBranch]$leftRef = [GitBranch]::new($leftBranchName)
+		[GitBranch]$rightRef = [GitBranch]::new($rightBranchName)
+
+		# Compute merge-base
+		[string]$mergeBaseHash = [GitTool]::GetMergeBase($leftRef.CommitHash, $rightRef.CommitHash)
+		if([string]::IsNullOrWhiteSpace($mergeBaseHash)) {
+			Write-Fail "Cannot create three-way diff: no common ancestor found between branches (unrelated histories?)"
+		}
+
+		[GitBranch]$mergeBaseBranch = [GitBranch]::new($mergeBaseHash)
+
+		[GitDiffBranch]$result = [GitDiffBranch]::new($leftRef, $rightRef)
+		$result.ThreeWayMode = $true
+		$result.BaseBranch = [GitBranchDirectory]::new($result.RootDirectory, $mergeBaseBranch, $result.RootDirectory.CreateSubdirectory("base"))
+		return $result
+	}
+
 	[GitBranchDirectory]$LeftBranch
 	[GitBranchDirectory]$RightBranch
+	[GitBranchDirectory]$BaseBranch
+	[bool]$ThreeWayMode
+	[System.IO.FileInfo]$HistoryFile
 
 	[System.IO.DirectoryInfo]$RootDirectory
 
@@ -1253,7 +1381,7 @@ class GitDiffBranch {
 			{
 				$diffFilePaths += $diffFile.LeftFile.FullName
 			}
-			
+
 			if($null -ne $diffFile.RightFile -and -not
 				$diffFile.RightFile.Equals($diffFile.LeftFile))
 			{
@@ -1261,11 +1389,27 @@ class GitDiffBranch {
 			}
 		}
 
-		if([string]::IsNullOrWhiteSpace($archiveFileName)) 
+		# Include base directory files in three-way mode
+		if($this.ThreeWayMode -and $null -ne $this.BaseBranch -and $this.BaseBranch.Directory.Exists)
+		{
+			[System.IO.FileInfo[]]$baseFiles = $this.BaseBranch.Directory.GetFiles("*", [System.IO.SearchOption]::AllDirectories)
+			foreach($baseFile in $baseFiles) {
+				$diffFilePaths += $baseFile.FullName
+			}
+		}
+
+		# Include history file in archive if generated
+		if($null -ne $this.HistoryFile -and $this.HistoryFile.Exists)
+		{
+			$diffFilePaths += $this.HistoryFile.FullName
+		}
+
+		if([string]::IsNullOrWhiteSpace($archiveFileName))
 		{
 			[string]$leftName = $this.LeftBranch.Directory.Name
 			[string]$rightName = $this.RightBranch.Directory.Name
-			$archiveFileName =  "$leftName$([GitDiff]::BranchDiffSeparator)$rightName.zip"
+			[string]$threeWayPrefix = $(if($this.ThreeWayMode) { "3way " } else { "" })
+			$archiveFileName = "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName.zip"
 		}
 		elseif(-not $(Get-ExtensionEquals $archiveFileName ".zip"))
 		{
@@ -1276,11 +1420,11 @@ class GitDiffBranch {
 		[System.IO.FileInfo]$archiveFile = [System.IO.FileInfo]::new($archiveFilePath)
 
 		[string]$rootedPathToIgnore = $this.RootDirectory.FullName
-		[string]$archiveFileName = $archiveFile.Name
+		[string]$zipFileName = $archiveFile.Name
 		[string]$destinationPath = $archiveFile.Directory.FullName
 
 		try {
-			CreateZipFromPathsImpl $diffFilePaths $rootedPathToIgnore $destinationPath $archiveFileName $false
+			CreateZipFromPathsImpl $diffFilePaths $rootedPathToIgnore $destinationPath $zipFileName $false
 		}
 		catch {
 			Write-Fail "Failed to create archive: $($Error[0])"
@@ -1291,16 +1435,186 @@ class GitDiffBranch {
 		return $archiveFile
 	}
 
-	[GitDiffFile[]] WriteDiffFiles() 
+	[System.IO.FileInfo] WriteHistoryFile([GitDiff[]]$diffs)
 	{
+		[string]$leftHash = $this.LeftBranch.Branch.CommitHash
+		[string]$rightHash = $this.RightBranch.Branch.CommitHash
+
+		[string]$mergeBase = [GitTool]::GetMergeBase($leftHash, $rightHash)
+		if([string]::IsNullOrWhiteSpace($mergeBase))
+		{
+			Write-Warn "Could not determine merge-base for history; skipping HISTORY.md"
+			return $null
+		}
+		[string]$mergeBaseShort = $mergeBase.Substring(0, [System.Math]::Min(8, $mergeBase.Length))
+
+		# Collect file paths from the diff set (exclude manifest entries)
+		[System.Collections.Generic.List[string]]$filePaths = [System.Collections.Generic.List[string]]::new()
+		foreach($diff in $diffs)
+		{
+			if($diff.Status -eq [GitDiffStatus]::Unknown) { continue }
+			if(-not [string]::IsNullOrWhiteSpace($diff.FilePath) -and -not $filePaths.Contains($diff.FilePath))
+			{
+				$filePaths.Add($diff.FilePath)
+			}
+			if(-not [string]::IsNullOrWhiteSpace($diff.OriginalFilePath) -and
+			   -not [string]::Equals($diff.OriginalFilePath, $diff.FilePath) -and
+			   -not $filePaths.Contains($diff.OriginalFilePath))
+			{
+				$filePaths.Add($diff.OriginalFilePath)
+			}
+		}
+
+		if($filePaths.Count -eq 0) { return $null }
+
+		[string[]]$fileArgs = $filePaths.ToArray()
+
+		# Get commits on right branch that touched diff'd files
+		[string]$rightBranchName = $this.RightBranch.Branch.BranchName
+		[object[]]$rightLog = @(git --no-pager log --format="%h %s (%an, %ai)" "$mergeBase..$rightHash" -- @fileArgs 2>$null)
+		if($LASTEXITCODE -ne 0) { $rightLog = @() }
+
+		# Get commits on left branch that touched diff'd files
+		[string]$leftBranchName = $this.LeftBranch.Branch.BranchName
+		[object[]]$leftLog = @(git --no-pager log --format="%h %s (%an, %ai)" "$mergeBase..$leftHash" -- @fileArgs 2>$null)
+		if($LASTEXITCODE -ne 0) { $leftLog = @() }
+
+		if($rightLog.Count -eq 0 -and $leftLog.Count -eq 0) { return $null }
+
+		# Build history content
+		[System.Collections.Generic.List[string]]$lines = [System.Collections.Generic.List[string]]::new()
+		$lines.Add("# Commit History (files in diff only)")
+		$lines.Add("")
+		$lines.Add("Merge-base: $mergeBaseShort")
+		$lines.Add("")
+
+		if($rightLog.Count -gt 0)
+		{
+			$lines.Add("## $rightBranchName ($($rightLog.Count) commits)")
+			$lines.Add("")
+			foreach($entry in $rightLog) { $lines.Add("- $entry") }
+			$lines.Add("")
+		}
+
+		if($leftLog.Count -gt 0)
+		{
+			$lines.Add("## $leftBranchName ($($leftLog.Count) commits)")
+			$lines.Add("")
+			foreach($entry in $leftLog) { $lines.Add("- $entry") }
+			$lines.Add("")
+		}
+
+		[string]$historyFilePath = [System.IO.Path]::Combine($this.RootDirectory.FullName, "HISTORY.md")
+		[System.IO.File]::WriteAllLines($historyFilePath, $lines.ToArray(), [System.Text.Encoding]::UTF8)
+
+		[System.IO.FileInfo]$fileInfo = [System.IO.FileInfo]::new($historyFilePath)
+		[System.DateTime]$commitDate = $this.RightBranch.Branch.CommitDate.DateTime
+		$fileInfo.CreationTime = $commitDate
+		$fileInfo.LastAccessTime = $commitDate
+		$fileInfo.LastWriteTime = $commitDate
+
+		return $fileInfo
+	}
+
+	[GitDiffFile[]] WriteThreeWayDiffFiles()
+	{
+		[string]$baseHash = $this.BaseBranch.Branch.CommitHash
+		[string]$leftHash = $this.LeftBranch.Branch.CommitHash
+		[string]$rightHash = $this.RightBranch.Branch.CommitHash
+
+		# Run two diffs: base→left and base→right
+		Write-Host "  → " -ForegroundColor Cyan -NoNewline
+		Write-Host "Computing base→left diff..." -ForegroundColor Gray
+		[GitDiff[]]$baseToLeftDiffs = [GitTool]::GitDiff($baseHash, $leftHash)
+
+		Write-Host "  → " -ForegroundColor Cyan -NoNewline
+		Write-Host "Computing base→right diff..." -ForegroundColor Gray
+		[GitDiff[]]$baseToRightDiffs = [GitTool]::GitDiff($baseHash, $rightHash)
+
+		if($baseToLeftDiffs.Length -eq 0 -and $baseToRightDiffs.Length -eq 0) {
+			return @()
+		}
+
+		# Collect all unique file paths across both diffs (excluding manifests)
+		[System.Collections.Generic.HashSet[string]]$allPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+		foreach($diff in $baseToLeftDiffs) {
+			if($diff.Status -ne [GitDiffStatus]::Unknown) {
+				if(-not [string]::IsNullOrWhiteSpace($diff.FilePath)) { $null = $allPaths.Add($diff.FilePath) }
+				if(-not [string]::IsNullOrWhiteSpace($diff.OriginalFilePath)) { $null = $allPaths.Add($diff.OriginalFilePath) }
+			}
+		}
+		foreach($diff in $baseToRightDiffs) {
+			if($diff.Status -ne [GitDiffStatus]::Unknown) {
+				if(-not [string]::IsNullOrWhiteSpace($diff.FilePath)) { $null = $allPaths.Add($diff.FilePath) }
+				if(-not [string]::IsNullOrWhiteSpace($diff.OriginalFilePath)) { $null = $allPaths.Add($diff.OriginalFilePath) }
+			}
+		}
+
+		# Extract files for all three sides
+		[string]$activity = "Extracting three-way diff files"
+		[string[]]$pathList = $allPaths | Sort-Object
+		[double]$progressFactor = 100.0 / [System.Math]::Max(1, $pathList.Length)
+
+		[GitDiffFile[]]$diffFiles = @()
+		for($i = 0; $i -lt $pathList.Length; $i++) {
+			[string]$filePath = $pathList[$i]
+			[int]$percentage = $progressFactor * $i
+			Write-Progress -Activity $activity -Status "$percentage% Complete: $filePath" -PercentComplete $percentage
+
+			# Write file from each side (will create -missing token if file doesn't exist at that revision)
+			[System.IO.FileInfo]$baseFile = $this.BaseBranch.WriteFile($filePath)
+			[System.IO.FileInfo]$leftFile = $this.LeftBranch.WriteFile($filePath)
+			[System.IO.FileInfo]$rightFile = $this.RightBranch.WriteFile($filePath)
+
+			# Track left/right as the diff file pair (base files collected separately via directory scan)
+			$diffFiles += [GitDiffFile]::new($null, $leftFile, $rightFile)
+		}
+		Write-Progress -Activity $activity -Completed
+
+		# Generate history file
+		[System.IO.FileInfo]$historyResult = $this.WriteHistoryFile($baseToRightDiffs)
+		if($null -ne $historyResult) {
+			$this.HistoryFile = $historyResult
+		}
+
+		return $diffFiles
+	}
+
+	[GitDiffFile[]] WriteDiffFiles()
+	{
+		if($this.ThreeWayMode) {
+			return $this.WriteThreeWayDiffFiles()
+		}
+
         [GitDiffFile[]]$diffFiles = @()
 
-		[GitDiff[]]$diffs = [GitTool]::GitDiff($this.LeftBranch.Branch.CommitHash, $this.RightBranch.Branch.CommitHash)
+		[GitDiff[]]$diffs = @()
+		switch($this.RightBranch.Branch.Kind) {
+			([RevisionKind]::WorkTree) {
+				$diffs = [GitTool]::GitDiffWorkTree($this.LeftBranch.Branch.CommitHash)
+			}
+			([RevisionKind]::Staged) {
+				$diffs = [GitTool]::GitDiffStaged($this.LeftBranch.Branch.CommitHash)
+			}
+			default {
+				$diffs = [GitTool]::GitDiff($this.LeftBranch.Branch.CommitHash, $this.RightBranch.Branch.CommitHash)
+			}
+		}
 
         if($diffs.Length -eq 0)
         {
             return $diffFiles
         }
+
+		# Generate history file from commits that touched diff'd files (only for commit-to-commit)
+		[System.IO.FileInfo]$historyResult = $null
+		if($this.RightBranch.Branch.Kind -eq [RevisionKind]::Commit) {
+			$historyResult = $this.WriteHistoryFile($diffs)
+		}
+		if($null -ne $historyResult)
+		{
+			$this.HistoryFile = $historyResult
+		}
 
 		[string]$leftName = $this.LeftBranch.Directory.Name
 		[string]$rightName = $this.RightBranch.Directory.Name
@@ -1310,9 +1624,9 @@ class GitDiffBranch {
 		$diffs += $argumentsDiff
 
 		[string]$activity = "Pulling files involved in the diff"
-		
+
 		[double]$progressFactor = 100.0 / $diffs.Length
-		for ($i=0; $i -lt $diffs.Length; $i++) 
+		for ($i=0; $i -lt $diffs.Length; $i++)
 		{
 			[GitDiff]$diff = $diffs[$i]
 			[int]$percentage = $progressFactor * $i
@@ -1422,14 +1736,40 @@ class GitTool {
 
 		Write-Host "  → " -ForegroundColor Cyan -NoNewline
 		Write-Host "Diffing $commitHash..." -ForegroundColor Gray
+
+		# Check if merge-base exists; fall back to direct diff for unrelated histories
+		[bool]$hasMergeBase = $true
+		if(-not [string]::IsNullOrWhiteSpace($changesCommitHash))
+		{
+			if($null -eq [GitTool]::GetMergeBase($commitHash, $changesCommitHash))
+			{
+				Write-Warn "No common ancestor found between branches; using direct diff (unrelated histories?)"
+				$hasMergeBase = $false
+			}
+		}
+
 		[object[]]$diffsRawArray = @()
 		if([string]::IsNullOrWhiteSpace($changesCommitHash))
 		{
-			$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status --merge-base $commitHash
+			if($hasMergeBase)
+			{
+				$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status --merge-base $commitHash
+			}
+			else
+			{
+				$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status $commitHash
+			}
 		}
 		else
 		{
-			$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status --merge-base $commitHash $changesCommitHash
+			if($hasMergeBase)
+			{
+				$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status --merge-base $commitHash $changesCommitHash
+			}
+			else
+			{
+				$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status $commitHash $changesCommitHash
+			}
 		}
 
 		if($null -eq $diffsRawArray) {
@@ -1471,12 +1811,76 @@ class GitTool {
 		return $diffs
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory) 
+	static [GitDiff[]] GitDiffWorkTree([string]$commitHash) {
+		return [GitTool]::GitDiffSpecial("--", $commitHash, "working tree")
+	}
+
+	static [GitDiff[]] GitDiffStaged([string]$commitHash) {
+		return [GitTool]::GitDiffSpecial("--staged", $commitHash, "staged index")
+	}
+
+	hidden static [GitDiff[]] GitDiffSpecial([string]$diffFlag, [string]$commitHash, [string]$label) {
+		[GitDiff[]]$diffs = @()
+
+		if(-not (Get-Command -CommandType Application git -ErrorAction SilentlyContinue))
+		{
+			Write-Fail git not found
+			return $diffs
+		}
+
+		Write-Host "  → " -ForegroundColor Cyan -NoNewline
+		Write-Host "Diffing $commitHash against $label..." -ForegroundColor Gray
+
+		[object[]]$diffsRawArray = @()
+		if($diffFlag -eq "--") {
+			# Working tree diff: git diff --find-copies --find-renames --name-status $commitHash
+			$diffsRawArray = git --no-pager diff --find-copies --find-renames --name-status $commitHash
+		}
+		else {
+			# Staged diff: git diff --staged --find-copies --find-renames --name-status $commitHash
+			$diffsRawArray = git --no-pager diff $diffFlag --find-copies --find-renames --name-status $commitHash
+		}
+
+		if($null -eq $diffsRawArray) {
+			Write-Fail "git returned no diffs for $label"
+			return $diffs
+		}
+
+		[System.Collections.Generic.Dictionary[GitDiffStatus, int]]$counts = [System.Collections.Generic.Dictionary[GitDiffStatus, int]]::new()
+
+		for ($i=0; $i -lt $diffsRawArray.Length; $i++) {
+			[GitDiff]$diff = [GitDiff]::Parse($diffsRawArray[$i])
+			$diffs += $diff
+			if(-not $counts.ContainsKey($diff.Status)) {
+				$counts[$diff.Status] = 0
+			}
+			$counts[$diff.Status] = $counts[$diff.Status] + 1
+		}
+
+		[object[]]$manifestRawArray = @()
+		ForEach($count in $counts.GetEnumerator())
+		{
+			$key = $count.Key
+			$value = $count.Value
+			$manifestRawArray += "$key=$value"
+		}
+		$manifestRawArray += [string]::Empty
+		$manifestRawArray += $diffsRawArray
+
+		[string]$manifestFilePath = $([System.IO.Path]::Combine($script:Temp.GetTempPath(), "$label.manifest"))
+		Set-Content -Path $manifestFilePath -Value $manifestRawArray
+		[GitDiff]$manifestDiff = [GitDiff]::new([GitDiffStatusRaw]::X, $null, $manifestFilePath)
+		$diffs += $manifestDiff
+
+		return $diffs
+	}
+
+	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory)
 	{
 		return [GitTool]::ArchiveBranchDiffs($leftBranchName, $rightBranchName, $outputDirectory, $null)
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName) 
+	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
 	{
 		[GitDiffBranch]$diffBranch = [GitDiffBranch]::new($leftBranchName, $rightBranchName)
 
@@ -1486,6 +1890,32 @@ class GitTool {
         {
             return $null
         }
+		return $archiveFile
+	}
+
+	static [System.IO.FileInfo] ArchiveBranchDiffs([GitBranch]$leftBranch, [GitBranch]$rightBranch, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	{
+		[GitDiffBranch]$diffBranch = [GitDiffBranch]::new($leftBranch, $rightBranch)
+
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+
+		if($null -eq $archiveFile)
+		{
+			return $null
+		}
+		return $archiveFile
+	}
+
+	static [System.IO.FileInfo] ArchiveBranchDiffsThreeWay([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	{
+		[GitDiffBranch]$diffBranch = [GitDiffBranch]::ForThreeWay($leftBranchName, $rightBranchName)
+
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+
+		if($null -eq $archiveFile)
+		{
+			return $null
+		}
 		return $archiveFile
 	}
 
@@ -1529,15 +1959,21 @@ class GitTool {
 			return ""
 		}
 		[string]$remoteName = [GitTool]::GetRemoteName()
-		[string]$defaultBranch = git symbolic-ref refs/remotes/$remoteName/HEAD --short
-		if([string]::IsNullOrWhiteSpace($defaultBranch))
+		if([string]::IsNullOrWhiteSpace($remoteName))
 		{
-			return $defaultBranch
+			Write-Warn "No git remote configured; cannot detect default branch"
+			return ""
+		}
+		[string]$defaultBranch = git symbolic-ref refs/remotes/$remoteName/HEAD --short 2>$null
+		if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($defaultBranch))
+		{
+			Write-Warn "Could not resolve default branch for remote '$remoteName'"
+			return ""
 		}
 		return $defaultBranch.Trim()
 	}
 
-	static [string] GetCurrentBranch() 
+	static [string] GetCurrentBranch()
 	{
 		if(-not (Get-Command -CommandType Application git -ErrorAction SilentlyContinue))
 		{
@@ -1545,6 +1981,15 @@ class GitTool {
 			return ""
 		}
 		[string]$currentBranch = git branch --show-current
+		if([string]::IsNullOrWhiteSpace($currentBranch))
+		{
+			# Detached HEAD — fall back to short commit hash
+			$currentBranch = git rev-parse --short HEAD 2>$null
+			if(-not [string]::IsNullOrWhiteSpace($currentBranch))
+			{
+				Write-Warn "Detached HEAD state; using commit $($currentBranch.Trim()) as current branch"
+			}
+		}
 		if([string]::IsNullOrWhiteSpace($currentBranch))
 		{
 			return $currentBranch
@@ -1563,10 +2008,14 @@ class GitTool {
 			Write-Fail "branchName should not be null"
 		}
 
-		[string]$commitHash = git rev-parse $branchName
+		[string]$commitHash = git rev-parse $branchName 2>$null
+		if($LASTEXITCODE -ne 0)
+		{
+			return $null
+		}
 		if([string]::Equals($commitHash, $branchName))
 		{
-			if(-not [GitTool]::IsPossibleCommitHash($commitHash)) 
+			if(-not [GitTool]::IsPossibleCommitHash($commitHash))
 			{
 				$commitHash = $null
 			}
@@ -1596,7 +2045,24 @@ class GitTool {
 	        }
     	}
 
-	static [byte[]] GetFileContent([string]$branchOrRevision, [string]$repoFilePath) 
+	# Returns the merge-base commit hash, or $null if no common ancestor exists.
+	static [string] GetMergeBase([string]$commitHash1, [string]$commitHash2) {
+		if([string]::IsNullOrWhiteSpace($commitHash1) -or [string]::IsNullOrWhiteSpace($commitHash2)) {
+			return $null
+		}
+		[string]$mergeBase = git merge-base $commitHash1 $commitHash2 2>$null
+		if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($mergeBase)) {
+			return $null
+		}
+		return $mergeBase.Trim()
+	}
+
+	static [bool] IsShallowClone() {
+		[string]$result = git rev-parse --is-shallow-repository 2>$null
+		return ($result -eq "true")
+	}
+
+	static [byte[]] GetFileContent([string]$branchOrRevision, [string]$repoFilePath)
 	{
 		if($null -eq $branchOrRevision) {
 			Write-Fail "branchOrRevision should not be null"
@@ -1678,6 +2144,10 @@ class GitTool {
 	}
 }
 
+# Guard: skip entry point when dot-sourced for unit testing
+# Tests set $script:SkipEntryPoint = $true before dot-sourcing
+if($(try { $script:SkipEntryPoint } catch { $false })) { return }
+
 [System.IO.DirectoryInfo]$currentDirectory = [System.IO.DirectoryInfo]::new($(Get-Location))
 [Environment]::CurrentDirectory = $currentDirectory.FullName
 
@@ -1703,6 +2173,18 @@ Write-Host ""
 #endregion Banner
 
 try {
+
+#region Parameter Validation
+if($workingTree -and $staged) {
+	Write-Fail "-workingTree and -staged are mutually exclusive"
+}
+if($threeWay -and ($workingTree -or $staged)) {
+	Write-Fail "-threeWay is incompatible with -workingTree and -staged"
+}
+if((-not [string]::IsNullOrWhiteSpace($rightBranch)) -and ($workingTree -or $staged)) {
+	Write-Fail "-rightBranch cannot be used with -workingTree or -staged"
+}
+#endregion Parameter Validation
 
 #region Input Resolution
 Write-Host "  ── " -ForegroundColor DarkGray -NoNewline
@@ -1771,7 +2253,7 @@ if($nonInteractive)
 		}
 	}
 
-	if([string]::IsNullOrWhiteSpace($rightBranch))
+	if(-not $workingTree -and -not $staged -and [string]::IsNullOrWhiteSpace($rightBranch))
 	{
 		$rightBranch = [GitTool]::GetCurrentBranch()
 		if([string]::IsNullOrWhiteSpace($rightBranch))
@@ -1795,7 +2277,7 @@ else
 		}
 		else
 		{
-			[string[]]$branches = @(git branch -a --format='%(refname:short)' 2>$null)
+			[string[]]$branches = @(Get-GitCompletionCandidates)
 			if($branches.Count -gt 0)
 			{
 				$leftBranch = Read-PromptWithCompletion "Enter the name of the LEFT branch for comparison" $branches
@@ -1807,7 +2289,7 @@ else
 		}
 	}
 
-	if([string]::IsNullOrWhiteSpace($rightBranch))
+	if(-not $workingTree -and -not $staged -and [string]::IsNullOrWhiteSpace($rightBranch))
 	{
 		[string]$currentBranch = [GitTool]::GetCurrentBranch()
 
@@ -1820,7 +2302,7 @@ else
 		}
 		else
 		{
-			[string[]]$branches = @(git branch -a --format='%(refname:short)' 2>$null)
+			[string[]]$branches = @(Get-GitCompletionCandidates)
 			if($branches.Count -gt 0)
 			{
 				$rightBranch = Read-PromptWithCompletion "Enter the name of the RIGHT branch for comparison" $branches
@@ -1835,12 +2317,17 @@ else
 
 Pop-Location
 
+# Determine right-side display name
+[string]$rightDisplay = $rightBranch
+if($workingTree) { $rightDisplay = "WORKING-TREE" }
+elseif($staged) { $rightDisplay = "STAGED" }
+
 Write-Host "  ✓ " -ForegroundColor Green -NoNewline
 Write-Host "Left branch:  " -ForegroundColor Gray -NoNewline
 Write-Host "$leftBranch" -ForegroundColor White
 Write-Host "  ✓ " -ForegroundColor Green -NoNewline
 Write-Host "Right branch: " -ForegroundColor Gray -NoNewline
-Write-Host "$rightBranch" -ForegroundColor White
+Write-Host "$rightDisplay" -ForegroundColor White
 
 if($nonInteractive)
 {
@@ -1872,7 +2359,29 @@ Write-Host ""
 
 Push-Location -Path $repositoryPath
 
-[System.IO.FileInfo]$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+# Warn about shallow clones which may produce incomplete results
+if([GitTool]::IsShallowClone())
+{
+	Write-Warn "This is a shallow clone; diff results and commit history may be incomplete"
+}
+
+[System.IO.FileInfo]$archiveFile = $null
+if($workingTree) {
+	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
+	[GitBranch]$rightBranchObj = [GitBranch]::ForWorkTree()
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
+}
+elseif($staged) {
+	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
+	[GitBranch]$rightBranchObj = [GitBranch]::ForStaged()
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
+}
+elseif($threeWay) {
+	$archiveFile = [GitTool]::ArchiveBranchDiffsThreeWay($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+}
+else {
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+}
 
 $script:stopwatch.Stop()
 
@@ -1910,7 +2419,7 @@ if($null -ne $archiveFile -and $archiveFile.Exists)
 	Write-Host "│" -ForegroundColor Green
 	Write-Host "  ├$("─" * $labelWidth)┬$("─" * $valueWidth)┤" -ForegroundColor Green
 	Write-TableRow "Left Branch" $leftBranch
-	Write-TableRow "Right Branch" $rightBranch
+	Write-TableRow "Right Branch" $rightDisplay
 	Write-TableRow "Archive" $archiveDisplay
 	Write-TableRow "Size" $sizeDisplay
 	Write-TableRow "Elapsed" $elapsed
