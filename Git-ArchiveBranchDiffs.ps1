@@ -1336,6 +1336,7 @@ class GitDiffBranch {
 	[GitBranchDirectory]$BaseBranch
 	[bool]$ThreeWayMode
 	[System.IO.FileInfo]$HistoryFile
+	[System.IO.FileInfo]$PatchFile
 
 	[System.IO.DirectoryInfo]$RootDirectory
 
@@ -1388,6 +1389,12 @@ class GitDiffBranch {
 		if($null -ne $this.HistoryFile -and $this.HistoryFile.Exists)
 		{
 			$diffFilePaths += $this.HistoryFile.FullName
+		}
+
+		# Include patch file in archive if generated
+		if($null -ne $this.PatchFile -and $this.PatchFile.Exists)
+		{
+			$diffFilePaths += $this.PatchFile.FullName
 		}
 
 		if([string]::IsNullOrWhiteSpace($archiveFileName))
@@ -1593,6 +1600,43 @@ class GitDiffBranch {
 		}
 	}
 
+	# Generates a unified diff patch and writes it to CHANGES.patch in the archive root.
+	# Dispatches by RevisionKind to produce the correct git diff invocation.
+	[System.IO.FileInfo] WritePatchFile()
+	{
+		[string]$leftHash = $this.LeftBranch.Branch.CommitHash
+		[RevisionKind]$rightKind = $this.RightBranch.Branch.Kind
+		[string[]]$patchLines = @()
+
+		if($rightKind -eq [RevisionKind]::WorkTree) {
+			$patchLines = @(git --no-pager diff $leftHash 2>$null)
+		}
+		elseif($rightKind -eq [RevisionKind]::Staged) {
+			$patchLines = @(git --no-pager diff --staged $leftHash 2>$null)
+		}
+		else {
+			[string]$rightHash = $this.RightBranch.Branch.CommitHash
+			$patchLines = @(git --no-pager diff $leftHash $rightHash 2>$null)
+		}
+
+		if($LASTEXITCODE -ne 0 -or $null -eq $patchLines -or $patchLines.Length -eq 0) {
+			return $null
+		}
+
+		[string]$patchContent = [string]::Join([System.Environment]::NewLine, $patchLines)
+		[string]$patchFilePath = [System.IO.Path]::Combine($this.RootDirectory.FullName, "CHANGES.patch")
+		[System.IO.File]::WriteAllText($patchFilePath, $patchContent, [System.Text.Encoding]::UTF8)
+
+		[System.IO.FileInfo]$fileInfo = [System.IO.FileInfo]::new($patchFilePath)
+		if($this.RightBranch.Branch.Kind -eq [RevisionKind]::Commit) {
+			[System.DateTime]$commitDate = $this.RightBranch.Branch.CommitDate.DateTime
+			$fileInfo.CreationTime = $commitDate
+			$fileInfo.LastAccessTime = $commitDate
+			$fileInfo.LastWriteTime = $commitDate
+		}
+		return $fileInfo
+	}
+
 	[GitDiffFile[]] WriteThreeWayDiffFiles()
 	{
 		[string]$baseHash = $this.BaseBranch.Branch.CommitHash
@@ -1654,6 +1698,12 @@ class GitDiffBranch {
 			$this.HistoryFile = $historyResult
 		}
 
+		# Generate unified diff patch file
+		[System.IO.FileInfo]$patchResult = $this.WritePatchFile()
+		if($null -ne $patchResult) {
+			$this.PatchFile = $patchResult
+		}
+
 		return $diffFiles
 	}
 
@@ -1691,6 +1741,13 @@ class GitDiffBranch {
 		if($null -ne $historyResult)
 		{
 			$this.HistoryFile = $historyResult
+		}
+
+		# Generate unified diff patch file (all modes)
+		[System.IO.FileInfo]$patchResult = $this.WritePatchFile()
+		if($null -ne $patchResult)
+		{
+			$this.PatchFile = $patchResult
 		}
 
 		[string]$leftName = $this.LeftBranch.Directory.Name
