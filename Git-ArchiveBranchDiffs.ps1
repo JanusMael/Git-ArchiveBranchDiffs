@@ -2998,11 +2998,15 @@ if($null -ne $archiveFile -and $archiveFile.Exists)
 		Write-Host " $value" -ForegroundColor $valueColor
 	}
 
+	[string]$headerText = " Archive Created Successfully"
+	[int]$headerWidth = $headerText.Length + 1
+
 	Write-Host ""
-	Write-Host "  ┌$("─" * ($labelWidth + 1))──" -ForegroundColor Green
+	Write-Host "  ┌$("─" * $headerWidth)┐" -ForegroundColor Green
 	Write-Host "  │" -ForegroundColor Green -NoNewline
-	Write-Host " Archive Created Successfully" -ForegroundColor White
-	Write-Host "  ├$("─" * $labelWidth)┬──" -ForegroundColor Green
+	Write-Host ("{0,-$headerWidth}" -f $headerText) -ForegroundColor White -NoNewline
+	Write-Host "│" -ForegroundColor Green
+	Write-Host "  ├$("─" * $labelWidth)┬$("─" * ($headerWidth - $labelWidth - 1))┘" -ForegroundColor Green
 	Write-TableRow "Left Branch" $leftBranch
 	Write-TableRow "Right Branch" $rightDisplay
 	Write-TableRow "Archive" $archiveFile.Name
