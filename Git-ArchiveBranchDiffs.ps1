@@ -2991,47 +2991,25 @@ if($null -ne $archiveFile -and $archiveFile.Exists)
 
 	[int]$labelWidth = 14
 
-	# Prepare all display values first, truncating only path/archive
-	# (those are filesystem noise — branch names are user intent and should not be clipped)
-	[string]$archiveDisplay = $archiveFile.Name
-	[string]$pathDisplay = $archiveFile.Directory.FullName
-
-	# Compute value column width from the widest actual value (+ 2 for padding).
-	# Floor at 34 so short values still look tidy; cap at 72 so the table
-	# doesn't sprawl across ultra-wide terminals.
-	[int]$minValueWidth = 34
-	[int]$maxValueWidth = 72
-	[string[]]$allValues = @($leftBranch, $rightDisplay, $archiveDisplay, $sizeDisplay, $elapsed, $pathDisplay)
-	[int]$widest = ($allValues | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum + 2
-	[int]$valueWidth = [System.Math]::Min($maxValueWidth, [System.Math]::Max($minValueWidth, $widest))
-
-	# Now truncate archive name and path to fit the resolved width
-	if($archiveDisplay.Length -gt ($valueWidth - 2)) { $archiveDisplay = $archiveFile.Name.Substring(0, $valueWidth - 5) + "..." }
-	if($pathDisplay.Length -gt ($valueWidth - 2)) { $pathDisplay = "..." + $archiveFile.Directory.FullName.Substring($archiveFile.Directory.FullName.Length - ($valueWidth - 6)) }
-
-	[int]$tableWidth = $labelWidth + 1 + $valueWidth  # +1 for middle ┬/│
-
 	function Write-TableRow([string]$label, [string]$value, [string]$valueColor = "White") {
 		Write-Host "  │" -ForegroundColor Green -NoNewline
 		Write-Host ("{0,-$labelWidth}" -f " $label") -ForegroundColor Gray -NoNewline
 		Write-Host "│" -ForegroundColor Green -NoNewline
-		Write-Host ("{0,-$valueWidth}" -f " $value") -ForegroundColor $valueColor -NoNewline
-		Write-Host "│" -ForegroundColor Green
+		Write-Host " $value" -ForegroundColor $valueColor
 	}
 
 	Write-Host ""
-	Write-Host "  ┌$("─" * $tableWidth)┐" -ForegroundColor Green
+	Write-Host "  ┌$("─" * ($labelWidth + 1))──" -ForegroundColor Green
 	Write-Host "  │" -ForegroundColor Green -NoNewline
-	Write-Host ("{0,-$tableWidth}" -f " Archive Created Successfully") -ForegroundColor White -NoNewline
-	Write-Host "│" -ForegroundColor Green
-	Write-Host "  ├$("─" * $labelWidth)┬$("─" * $valueWidth)┤" -ForegroundColor Green
+	Write-Host " Archive Created Successfully" -ForegroundColor White
+	Write-Host "  ├$("─" * $labelWidth)┬──" -ForegroundColor Green
 	Write-TableRow "Left Branch" $leftBranch
 	Write-TableRow "Right Branch" $rightDisplay
-	Write-TableRow "Archive" $archiveDisplay
+	Write-TableRow "Archive" $archiveFile.Name
 	Write-TableRow "Size" $sizeDisplay
 	Write-TableRow "Elapsed" $elapsed
-	Write-TableRow "Path" $pathDisplay
-	Write-Host "  └$("─" * $labelWidth)┴$("─" * $valueWidth)┘" -ForegroundColor Green
+	Write-TableRow "Path" $archiveFile.Directory.FullName
+	Write-Host "  └$("─" * $labelWidth)┘" -ForegroundColor Green
 	Write-Host ""
 	Write-Host "  Extract the archive and use a directory-diff tool to review:" -ForegroundColor Gray
 	Write-Host "    Beyond Compare, Meld, VS Code, etc." -ForegroundColor DarkGray
