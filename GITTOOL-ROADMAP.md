@@ -2,53 +2,79 @@
 
 Thinking about `GitTool` as a general-purpose git abstraction layer rather than just an archival helper.
 
-Currently `GitTool` wraps: diff, file content retrieval, branch/commit resolution, remote detection, commit dates, hash validation, repo validation, and cleanup. The theme is **"typed PowerShell interface over git CLI operations"** — turning raw string output into structured objects.
-
-Here are static methods that fit thematically:
+`GitTool` wraps git CLI operations into **typed PowerShell static methods** — turning raw string output into structured objects. Below is the full inventory of methods, organized by theme.
 
 ## Commit & History
 
-- `GetLog([string]$range, [int]$limit)` — structured commit objects (hash, author, date, subject, body)
-- `GetBlame([string]$revision, [string]$filePath)` — line-by-line authorship with commit metadata
-- `GetCommitFiles([string]$commitHash)` — files touched by a single commit (already close to what HISTORY.md does internally)
-- `GetContributors([string]$range)` — unique authors/committers with commit counts
+| Method | Status | Notes |
+|--------|--------|-------|
+| `GetLog(range, limit, paths)` | Done | Returns `GitLogEntry[]`; wired into `WriteHistoryFile` |
+| `GetBlame(revision, filePath)` | Done | Returns `GitBlameLine[]` via `--porcelain` |
+| `GetCommitFiles(commitHash)` | Done | Returns `GitDiff[]`; wired into HISTORY.md per-commit lists |
+| `GetContributors(range)` | Done | Returns `GitContributor[]` via `shortlog -sne` |
 
 ## Branch & Ref Operations
 
-- `GetBranches([bool]$includeRemotes)` — typed branch objects with tracking info, ahead/behind counts
-- `GetTags()` — tag objects with annotated vs lightweight, tagger, date
-- `GetStashes()` — stash entries with index, message, parent commit
-- `GetMergeBase([string]$ref1, [string]$ref2)` — already computed in multiple places, deserves its own method
-- `IsAncestor([string]$ancestor, [string]$descendant)` — `git merge-base --is-ancestor`
+| Method | Status | Notes |
+|--------|--------|-------|
+| `GetBranches(includeRemotes)` | Done | Wired into `Get-GitCompletionCandidates` |
+| `GetTags()` | Done | Wired into completion |
+| `GetStashes()` | Done | Wired into completion |
+| `GetMergeBase(ref1, ref2)` | Done | Extracted from 3 duplicated call sites |
+| `IsAncestor(ancestor, descendant)` | Done | Wired into entry-point preflight |
 
 ## Working State
 
-- `GetStatus()` — structured file status objects (staged, modified, untracked, conflicted)
-- `GetStagedFiles()` — just the staged subset, with diff stats
-- `GetConflicts()` — files in conflict with conflict type (both-modified, deleted-by-us, etc.)
+| Method | Status | Notes |
+|--------|--------|-------|
+| `GetStatus()` | Done | Returns `GitStatusEntry[]`; wired into `-workingTree`/`-staged` fast-fail |
+| `GetStagedFiles()` | Done | Returns `hashtable[]` pairing `GitStatusEntry` with `GitDiffStat` |
+| `GetConflicts()` | Done | Convenience filter: `GetStatus()` where `IsConflicted()` |
 
 ## Repo Metadata
 
-- `GetConfig([string]$key)` — typed config lookup (user.name, core.autocrlf, etc.)
-- `IsShallowClone()` — already done inline, should be a method
-- `GetWorktrees()` — list of worktrees with paths and checked-out branches
-- `GetSubmodules()` — submodule paths, URLs, and current commit
-- `GetRepoRoot()` — `git rev-parse --show-toplevel` (inverse of `IsGitRoot`)
+| Method | Status | Notes |
+|--------|--------|-------|
+| `IsShallowClone()` | Done | Extracted from entry-point inline check |
+| `GetRepoRoot()` | Done | Wired into subdirectory launch support |
+| `IsGitRoot(directoryPath)` | Done | Accepts both `.git` directory and worktree `.git` file |
+| `GetConfig(key)` | Deferred | Typed config lookup (user.name, core.autocrlf, etc.) |
+| `GetWorktrees()` | Deferred | Worktree paths + checked-out branches |
+| `GetSubmodules()` | Deferred | Submodule paths, URLs, current commit |
 
 ## Diff & Comparison
 
-- `GetDiffStat([string]$left, [string]$right)` — insertions/deletions per file (structured `--stat`)
-- `GetFileDiff([string]$left, [string]$right, [string]$filePath)` — unified diff for a single file
-- `GetFileAtRevision([string]$revision, [string]$path)` — already exists as `GetFileContent`, but a cleaner name
-- `CompareFiles([string]$rev1, [string]$path1, [string]$rev2, [string]$path2)` — cross-revision single-file diff
+| Method | Status | Notes |
+|--------|--------|-------|
+| `GetDiffStat(left, right)` | Done | Returns `GitDiffStat[]`; wired into HISTORY.md churn table |
+| `GetFileDiff(left, right, filePath)` | Done | Unified diff text for a single file |
+| `GetFileAtRevision(revision, path)` | Done | Alias for `GetFileContent` with cleaner name |
+| `CompareFiles(rev1, path1, rev2, path2)` | Done | Cross-revision single-file diff via blob comparison |
 
-## Prioritized
+## Supporting Classes
 
-The ones I'd actually prioritize:
+| Class | Purpose |
+|-------|---------|
+| `GitLogEntry` | Structured commit (hash, author, date, subject) |
+| `GitBlameLine` | Per-line blame annotation |
+| `GitContributor` | Author + commit count from shortlog |
+| `GitDiffStat` | Per-file insertions/deletions/binary flag |
+| `GitStatusEntry` | Porcelain v1 status (index + worktree flags) |
+| `GitDiffFile` | Left/right file pair in an archive |
 
-1. **`GetMergeBase`** — already duplicated in `WriteHistoryFile`, `ForThreeWay`, and `GitDiff`
-2. **`IsShallowClone`** — already done inline at the entry point
-3. **`GetStatus`** — would enable the `-workingTree` / `-staged` features to show a preview of what's changed before archiving
-4. **`GetLog` with structured output** — `WriteHistoryFile` manually parses `git log` output; this would clean that up
+## Archive Pipeline Integration
 
-The first two are pure refactors (extract existing code). The latter two would expand the tool's utility beyond archival.
+Several GitTool methods are wired into the archive pipeline:
+
+- **Entry point**: `IsAncestor` preflight, `GetRepoRoot` subdirectory launch, `GetStatus` fast-fail for `-workingTree`/`-staged`
+- **HISTORY.md**: `GetLog` for commits, `GetDiffStat` for churn summary, `GetCommitFiles` for per-commit file lists
+- **CHANGES.patch**: `WritePatchFile` produces unified diff included in every archive
+- **Completion**: `GetBranches`/`GetTags`/`GetStashes` power tab-completion
+
+## Deferred Items
+
+These are intentionally deferred — useful but no immediate integration point:
+
+- `GetConfig` — would support future features like auto-detecting line endings
+- `GetWorktrees` — would support multi-worktree awareness
+- `GetSubmodules` — would support submodule-aware archiving
