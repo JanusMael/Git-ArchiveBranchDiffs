@@ -563,6 +563,71 @@ Describe "Git-ArchiveBranchDiffs" {
         }
     }
 
+    Describe "GitTool.GetStagedFiles" {
+
+        It "returns an array (possibly empty)" {
+            $result = [GitTool]::GetStagedFiles()
+            ,$result | Should -BeOfType [System.Array]
+        }
+
+        It "each entry has Status and DiffStat keys" {
+            $result = [GitTool]::GetStagedFiles()
+            foreach($entry in $result) {
+                $entry.ContainsKey("Status") | Should -BeTrue
+                $entry.ContainsKey("DiffStat") | Should -BeTrue
+                $entry.Status.GetType().Name | Should -Be "GitStatusEntry"
+            }
+        }
+    }
+
+    Describe "GitTool.GetConflicts" {
+
+        It "returns an empty array when not in a merge conflict" {
+            $result = @([GitTool]::GetConflicts())
+            $result.Count | Should -Be 0
+        }
+    }
+
+    Describe "GitTool.GetFileAtRevision" {
+
+        It "returns bytes for a known file at HEAD" {
+            $result = [GitTool]::GetFileAtRevision("HEAD", "Git-ArchiveBranchDiffs.ps1")
+            $result.Length | Should -BeGreaterThan 0
+        }
+
+        It "returns empty for a nonexistent file" {
+            $result = [GitTool]::GetFileAtRevision("HEAD", "nonexistent-xyzzy-file.txt")
+            $result.Length | Should -Be 0
+        }
+    }
+
+    Describe "GitTool.CompareFiles" {
+
+        It "returns empty for empty inputs" {
+            [GitTool]::CompareFiles("", "x", "HEAD", "y") | Should -Be ""
+            [GitTool]::CompareFiles("HEAD", "x", "", "y") | Should -Be ""
+            [GitTool]::CompareFiles("HEAD", "", "HEAD", "y") | Should -Be ""
+            [GitTool]::CompareFiles("HEAD", "x", "HEAD", "") | Should -Be ""
+        }
+
+        It "returns empty when comparing the same file at the same revision" {
+            [GitTool]::CompareFiles("HEAD", "Git-ArchiveBranchDiffs.ps1", "HEAD", "Git-ArchiveBranchDiffs.ps1") | Should -Be ""
+        }
+
+        It "returns diff when comparing different revisions of the same file" {
+            $parent = git rev-parse "HEAD~1" 2>$null
+            if($LASTEXITCODE -eq 0 -and $null -ne $parent) {
+                $stats = @([GitTool]::GetDiffStat("HEAD~1", "HEAD"))
+                if($stats.Count -gt 0) {
+                    $path = $stats[0].FilePath
+                    $diff = [GitTool]::CompareFiles("HEAD~1", $path, "HEAD", $path)
+                    $diff | Should -Not -BeNullOrEmpty
+                    $diff | Should -Match "diff --git"
+                }
+            }
+        }
+    }
+
     Describe "GitTool.GetFileDiff" {
 
         It "returns empty string for empty inputs" {

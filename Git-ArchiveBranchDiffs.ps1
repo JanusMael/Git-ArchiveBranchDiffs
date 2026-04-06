@@ -2565,6 +2565,27 @@ class GitTool {
 		return [string]::Join([System.Environment]::NewLine, $lines)
 	}
 
+	# Cleaner alias for GetFileContent — returns file bytes at a specific revision.
+	# Returns an empty byte array if the file doesn't exist at that revision.
+	static [byte[]] GetFileAtRevision([string]$revision, [string]$filePath) {
+		return [GitTool]::GetFileContent($revision, $filePath)
+	}
+
+	# Returns the unified diff between two (potentially different) files at
+	# two revisions. Useful for comparing renamed files or files across repos.
+	static [string] CompareFiles([string]$rev1, [string]$path1, [string]$rev2, [string]$path2) {
+		if([string]::IsNullOrWhiteSpace($rev1) -or [string]::IsNullOrWhiteSpace($path1) -or
+		   [string]::IsNullOrWhiteSpace($rev2) -or [string]::IsNullOrWhiteSpace($path2)) {
+			return ""
+		}
+		# git diff <blob1> <blob2> compares two arbitrary objects.
+		[string]$leftBlob = "${rev1}:${path1}"
+		[string]$rightBlob = "${rev2}:${path2}"
+		[string[]]$lines = @(git --no-pager diff $leftBlob $rightBlob 2>$null)
+		if($LASTEXITCODE -ne 0 -or $null -eq $lines) { return "" }
+		return [string]::Join([System.Environment]::NewLine, $lines)
+	}
+
 	# Returns per-file insertion/deletion counts between two revisions.
 	# Accepts "A..B" range or two separate refs via DiffStat(left, right).
 	static [GitDiffStat[]] GetDiffStat([string]$left, [string]$right) {
@@ -2591,6 +2612,39 @@ class GitTool {
 			if($null -ne $entry) { $entries.Add($entry) }
 		}
 		return $entries.ToArray()
+	}
+
+	# Returns staged files with per-file insertion/deletion counts.
+	# Each entry pairs the GitStatusEntry with its GitDiffStat (staged vs HEAD).
+	static [hashtable[]] GetStagedFiles() {
+		[GitStatusEntry[]]$status = [GitTool]::GetStatus()
+		[GitStatusEntry[]]$stagedOnly = @($status | Where-Object { $_.IsStaged() })
+		if($stagedOnly.Length -eq 0) { return @() }
+		# Get numstat for staged changes (diff --staged --numstat)
+		[string[]]$statLines = @(git --no-pager diff --staged --numstat 2>$null)
+		[System.Collections.Generic.Dictionary[string,GitDiffStat]]$statMap =
+			[System.Collections.Generic.Dictionary[string,GitDiffStat]]::new([System.StringComparer]::OrdinalIgnoreCase)
+		if($LASTEXITCODE -eq 0 -and $null -ne $statLines) {
+			foreach($sl in $statLines) {
+				[GitDiffStat]$ds = [GitDiffStat]::Parse($sl)
+				if($null -ne $ds -and -not $statMap.ContainsKey($ds.FilePath)) {
+					$statMap[$ds.FilePath] = $ds
+				}
+			}
+		}
+		[System.Collections.Generic.List[hashtable]]$results = [System.Collections.Generic.List[hashtable]]::new()
+		foreach($entry in $stagedOnly) {
+			[GitDiffStat]$stat = $null
+			[void]$statMap.TryGetValue($entry.FilePath, [ref]$stat)
+			$results.Add(@{ Status = $entry; DiffStat = $stat })
+		}
+		return $results.ToArray()
+	}
+
+	# Returns files currently in a merge conflict, with the conflict type code.
+	static [GitStatusEntry[]] GetConflicts() {
+		[GitStatusEntry[]]$status = [GitTool]::GetStatus()
+		return @($status | Where-Object { $_.IsConflicted() })
 	}
 
 	static [byte[]] GetFileContent([string]$branchOrRevision, [string]$repoFilePath)
