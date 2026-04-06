@@ -2990,7 +2990,25 @@ if($null -ne $archiveFile -and $archiveFile.Exists)
 	[string]$elapsed = "{0:N1}s" -f $script:stopwatch.Elapsed.TotalSeconds
 
 	[int]$labelWidth = 14
-	[int]$valueWidth = 34
+
+	# Prepare all display values first, truncating only path/archive
+	# (those are filesystem noise — branch names are user intent and should not be clipped)
+	[string]$archiveDisplay = $archiveFile.Name
+	[string]$pathDisplay = $archiveFile.Directory.FullName
+
+	# Compute value column width from the widest actual value (+ 2 for padding).
+	# Floor at 34 so short values still look tidy; cap at 72 so the table
+	# doesn't sprawl across ultra-wide terminals.
+	[int]$minValueWidth = 34
+	[int]$maxValueWidth = 72
+	[string[]]$allValues = @($leftBranch, $rightDisplay, $archiveDisplay, $sizeDisplay, $elapsed, $pathDisplay)
+	[int]$widest = ($allValues | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum + 2
+	[int]$valueWidth = [System.Math]::Min($maxValueWidth, [System.Math]::Max($minValueWidth, $widest))
+
+	# Now truncate archive name and path to fit the resolved width
+	if($archiveDisplay.Length -gt ($valueWidth - 2)) { $archiveDisplay = $archiveFile.Name.Substring(0, $valueWidth - 5) + "..." }
+	if($pathDisplay.Length -gt ($valueWidth - 2)) { $pathDisplay = "..." + $archiveFile.Directory.FullName.Substring($archiveFile.Directory.FullName.Length - ($valueWidth - 6)) }
+
 	[int]$tableWidth = $labelWidth + 1 + $valueWidth  # +1 for middle ┬/│
 
 	function Write-TableRow([string]$label, [string]$value, [string]$valueColor = "White") {
@@ -3000,11 +3018,6 @@ if($null -ne $archiveFile -and $archiveFile.Exists)
 		Write-Host ("{0,-$valueWidth}" -f " $value") -ForegroundColor $valueColor -NoNewline
 		Write-Host "│" -ForegroundColor Green
 	}
-
-	[string]$archiveDisplay = $archiveFile.Name
-	if($archiveDisplay.Length -gt ($valueWidth - 2)) { $archiveDisplay = $archiveFile.Name.Substring(0, $valueWidth - 5) + "..." }
-	[string]$pathDisplay = $archiveFile.Directory.FullName
-	if($pathDisplay.Length -gt ($valueWidth - 2)) { $pathDisplay = "..." + $archiveFile.Directory.FullName.Substring($archiveFile.Directory.FullName.Length - ($valueWidth - 6)) }
 
 	Write-Host ""
 	Write-Host "  ┌$("─" * $tableWidth)┐" -ForegroundColor Green
