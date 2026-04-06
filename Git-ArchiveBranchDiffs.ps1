@@ -1996,6 +1996,67 @@ class GitDiffStat {
 	}
 }
 
+<# Line-by-line authorship from `git blame --porcelain` #>
+class GitBlameLine {
+	[string]$CommitHash
+	[int]$LineNumber       # 1-based line number in the final file
+	[string]$AuthorName
+	[string]$AuthorEmail
+	[System.DateTimeOffset]$AuthorDate
+	[string]$Content       # the actual line text
+
+	GitBlameLine([string]$commitHash, [int]$lineNumber, [string]$authorName, [string]$authorEmail, [System.DateTimeOffset]$authorDate, [string]$content) {
+		$this.CommitHash = $commitHash
+		$this.LineNumber = $lineNumber
+		$this.AuthorName = $authorName
+		$this.AuthorEmail = $authorEmail
+		$this.AuthorDate = $authorDate
+		$this.Content = $content
+	}
+
+	[string] ToString() {
+		[string]$shortHash = $this.CommitHash
+		if($shortHash.Length -gt 8) { $shortHash = $shortHash.Substring(0, 8) }
+		return "$shortHash $($this.LineNumber): $($this.Content)"
+	}
+}
+
+<# Contributor summary from `git shortlog -sne` #>
+class GitContributor {
+	[int]$CommitCount
+	[string]$Name
+	[string]$Email
+
+	GitContributor([int]$commitCount, [string]$name, [string]$email) {
+		$this.CommitCount = $commitCount
+		$this.Name = $name
+		$this.Email = $email
+	}
+
+	# Parses a single shortlog line.  Format: "  <count>\t<name> <email>"
+	static [GitContributor] Parse([string]$line) {
+		if([string]::IsNullOrWhiteSpace($line)) { return $null }
+		[string]$trimmed = $line.Trim()
+		[string[]]$parts = $trimmed.Split("`t", 2)
+		if($parts.Length -lt 2) { return $null }
+		[int]$count = 0
+		if(-not [int]::TryParse($parts[0].Trim(), [ref]$count)) { return $null }
+		[string]$nameEmail = $parts[1].Trim()
+		[string]$authorName = $nameEmail
+		[string]$authorEmail = ""
+		[int]$emailStart = $nameEmail.LastIndexOf(" <")
+		if($emailStart -ge 0 -and $nameEmail.EndsWith(">")) {
+			$authorName = $nameEmail.Substring(0, $emailStart)
+			$authorEmail = $nameEmail.Substring($emailStart + 2, $nameEmail.Length - $emailStart - 3)
+		}
+		return [GitContributor]::new($count, $authorName, $authorEmail)
+	}
+
+	[string] ToString() {
+		return "$($this.CommitCount)`t$($this.Name) <$($this.Email)>"
+	}
+}
+
 <# wrapper around select `git <command>` #>
 class GitTool {
 	static [GitDiff[]] GitDiff() {
@@ -2437,6 +2498,62 @@ class GitTool {
 
 	# Returns the unified-diff text for a single file between two revisions.
 	# Returns an empty string if the file is unchanged (or input is empty/invalid).
+	# Returns line-by-line blame annotations for a file at a given revision.
+	static [GitBlameLine[]] GetBlame([string]$revision, [string]$filePath) {
+		if([string]::IsNullOrWhiteSpace($revision) -or [string]::IsNullOrWhiteSpace($filePath)) {
+			return @()
+		}
+		[string[]]$lines = @(git --no-pager blame --porcelain $revision -- $filePath 2>$null)
+		if($LASTEXITCODE -ne 0 -or $null -eq $lines -or $lines.Length -eq 0) { return @() }
+
+		[System.Collections.Generic.List[GitBlameLine]]$results = [System.Collections.Generic.List[GitBlameLine]]::new()
+		[string]$curHash = ""
+		[int]$curLine = 0
+		[string]$curAuthor = ""
+		[string]$curEmail = ""
+		[long]$curTimestamp = 0
+		[string]$curTz = "+0000"
+
+		foreach($raw in $lines) {
+			if($raw.StartsWith("`t")) {
+				# Content line — this terminates the current block.
+				[string]$lineContent = $raw.Substring(1)
+				[System.DateTimeOffset]$dto = [System.DateTimeOffset]::MinValue
+				try {
+					[System.DateTime]$epoch = [System.DateTime]::new(1970, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+					$dto = [System.DateTimeOffset]::new($epoch.AddSeconds($curTimestamp))
+				} catch { }
+				$results.Add([GitBlameLine]::new($curHash, $curLine, $curAuthor, $curEmail, $dto, $lineContent))
+			}
+			elseif($raw -match '^([0-9a-f]{40}) \d+ (\d+)') {
+				$curHash = $Matches[1]
+				$curLine = [int]$Matches[2]
+			}
+			elseif($raw.StartsWith("author ")) { $curAuthor = $raw.Substring(7) }
+			elseif($raw.StartsWith("author-mail ")) {
+				$curEmail = $raw.Substring(12).Trim('<', '>')
+			}
+			elseif($raw.StartsWith("author-time ")) {
+				[void][long]::TryParse($raw.Substring(12), [ref]$curTimestamp)
+			}
+			elseif($raw.StartsWith("author-tz ")) { $curTz = $raw.Substring(10) }
+		}
+		return $results.ToArray()
+	}
+
+	# Returns unique contributors (author name + email + commit count) for a range.
+	static [GitContributor[]] GetContributors([string]$range) {
+		if([string]::IsNullOrWhiteSpace($range)) { return @() }
+		[string[]]$lines = @(git --no-pager shortlog -sne $range 2>$null)
+		if($LASTEXITCODE -ne 0 -or $null -eq $lines) { return @() }
+		[System.Collections.Generic.List[GitContributor]]$results = [System.Collections.Generic.List[GitContributor]]::new()
+		foreach($line in $lines) {
+			[GitContributor]$c = [GitContributor]::Parse($line)
+			if($null -ne $c) { $results.Add($c) }
+		}
+		return $results.ToArray()
+	}
+
 	static [string] GetFileDiff([string]$left, [string]$right, [string]$filePath) {
 		if([string]::IsNullOrWhiteSpace($left) -or
 		   [string]::IsNullOrWhiteSpace($right) -or

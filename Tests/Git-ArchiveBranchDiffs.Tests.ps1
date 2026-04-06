@@ -483,6 +483,86 @@ Describe "Git-ArchiveBranchDiffs" {
         }
     }
 
+    Describe "GitContributor.Parse" {
+
+        It "parses a standard shortlog line" {
+            $c = [GitContributor]::Parse("    42`tJane Doe <jane@example.com>")
+            $c | Should -Not -BeNullOrEmpty
+            $c.CommitCount | Should -Be 42
+            $c.Name | Should -Be "Jane Doe"
+            $c.Email | Should -Be "jane@example.com"
+        }
+
+        It "parses a line without email brackets" {
+            $c = [GitContributor]::Parse("  5`tSomeone")
+            $c | Should -Not -BeNullOrEmpty
+            $c.CommitCount | Should -Be 5
+            $c.Name | Should -Be "Someone"
+        }
+
+        It "returns null for empty input" {
+            [GitContributor]::Parse("") | Should -BeNullOrEmpty
+            [GitContributor]::Parse($null) | Should -BeNullOrEmpty
+        }
+
+        It "returns null for malformed input" {
+            [GitContributor]::Parse("not a number") | Should -BeNullOrEmpty
+        }
+
+        It "ToString round-trips with count and name" {
+            $c = [GitContributor]::Parse("    3`tAlice <alice@test.com>")
+            $s = $c.ToString()
+            $s | Should -Match "3"
+            $s | Should -Match "Alice"
+        }
+    }
+
+    Describe "GitTool.GetContributors" {
+
+        It "returns empty for empty range" {
+            @([GitTool]::GetContributors("")).Count | Should -Be 0
+        }
+
+        It "returns at least one contributor for HEAD" {
+            $result = @([GitTool]::GetContributors("HEAD"))
+            $result.Count | Should -BeGreaterThan 0
+            $result[0].CommitCount | Should -BeGreaterThan 0
+            $result[0].Name | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    Describe "GitTool.GetBlame" {
+
+        It "returns empty for empty inputs" {
+            @([GitTool]::GetBlame("", "x.txt")).Count | Should -Be 0
+            @([GitTool]::GetBlame("HEAD", "")).Count | Should -Be 0
+        }
+
+        It "returns empty for nonexistent file" {
+            @([GitTool]::GetBlame("HEAD", "definitely-no-such-file-xyzzy.txt")).Count | Should -Be 0
+        }
+
+        It "returns blame lines for a known file at HEAD" {
+            $result = @([GitTool]::GetBlame("HEAD", "Git-ArchiveBranchDiffs.ps1"))
+            $result.Count | Should -BeGreaterThan 0
+            $result[0].CommitHash.Length | Should -Be 40
+            $result[0].LineNumber | Should -BeGreaterOrEqual 1
+            $result[0].Content | Should -Not -BeNullOrEmpty
+            $result[0].AuthorName | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    Describe "GitBlameLine.ToString" {
+
+        It "includes short hash and content" {
+            $bl = [GitBlameLine]::new("abcdef1234567890abcdef1234567890abcdef12", 5, "Author", "a@b.com", [System.DateTimeOffset]::Now, "some code")
+            $s = $bl.ToString()
+            $s | Should -Match "abcdef12"
+            $s | Should -Match "some code"
+            $s | Should -Match "5:"
+        }
+    }
+
     Describe "GitTool.GetFileDiff" {
 
         It "returns empty string for empty inputs" {
