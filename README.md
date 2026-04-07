@@ -2,7 +2,7 @@
 
 Create a self-contained ZIP archive of just the files that differ between two git branches — perfect for offline code review without needing a pull request.
 
-- **No PR required** — compare any two related branches
+- **No PR required** — compare any two related branches, tags, or commits
 - **Working tree & staged diffs** — archive uncommitted or staged changes
 - **Three-way diffs** — see what each side changed relative to the merge-base
 - **Offline review** — extract the archive and use your favorite diff tool
@@ -52,6 +52,12 @@ pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive -staged
 
 # Three-way diff showing merge-base
 pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive -threeWay
+
+# Compare two tags
+pwsh ./Git-ArchiveBranchDiffs.ps1 -leftBranch v1.0.0 -rightBranch v2.0.0
+
+# Compare a tag to a branch
+pwsh ./Git-ArchiveBranchDiffs.ps1 -leftBranch v1.0.0 -rightBranch main
 ```
 
 ### Linux / macOS (Bash)
@@ -76,8 +82,8 @@ pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `-repositoryPath` | No | Current directory or auto-detected from subdirectory | Path to any directory inside a git repository |
-| `-leftBranch` | No | Default remote branch (e.g., `origin/main`) | Branch for the left side of the diff |
-| `-rightBranch` | No | Currently checked-out branch | Branch for the right side of the diff |
+| `-leftBranch` | No | Default remote branch (e.g., `origin/main`) | Branch, tag, or commit ref for the left side of the diff |
+| `-rightBranch` | No | Currently checked-out branch | Branch, tag, or commit ref for the right side of the diff |
 | `-outputDirectory` | No | Prompted (interactive) or current directory | Where the ZIP file will be created |
 | `-archiveFileName` | No | Auto-generated from branch names | Custom name for the ZIP file |
 | `-nonInteractive` | No | `$false` | Skip all prompts and use smart defaults |
@@ -93,10 +99,13 @@ The tool supports four comparison modes:
 
 ### Normal (default)
 
-Compares two committed branches. The archive contains left and right directories with the differing files.
+Compares two committed refs (branches, tags, or commit hashes). The archive contains left and right directories with the differing files.
 
 ```powershell
 pwsh ./Git-ArchiveBranchDiffs.ps1 -leftBranch main -rightBranch feature/foo
+
+# Tags work the same way
+pwsh ./Git-ArchiveBranchDiffs.ps1 -leftBranch v1.0.0 -rightBranch v2.0.0
 ```
 
 ### Working Tree (`-workingTree`)
@@ -133,7 +142,7 @@ The `-nonInteractive` switch enables fully scripted usage with no prompts. Smart
 |-----------|-------------------------------|
 | `-repositoryPath` | Auto-detected from current directory (works from any subdirectory) |
 | `-leftBranch` | Default remote branch via `git symbolic-ref` |
-| `-rightBranch` | Currently checked-out branch via `git branch --show-current` |
+| `-rightBranch` | Currently checked-out branch (falls back to HEAD on detached HEAD) |
 | `-outputDirectory` | Current working directory |
 | `-archiveFileName` | `<leftBranch> ⟷ <rightBranch>.zip` |
 

@@ -12,12 +12,12 @@
     Tab-completes to directories containing a .git folder.
 
     .PARAMETER leftBranch
-    Specifies the name of the branch to be the left-side of a diff comparison.
-    Tab-completes to available local and remote branch names.
+    Specifies a branch, tag, or commit ref to be the left-side of a diff comparison.
+    Tab-completes to available branches, tags, and stashes.
 
     .PARAMETER rightBranch
-    Specifies the name of the branch to be the right-side of a diff comparison.
-    Tab-completes to available local and remote branch names.
+    Specifies a branch, tag, or commit ref to be the right-side of a diff comparison.
+    Tab-completes to available branches, tags, and stashes.
 
     .PARAMETER outputDirectory
     Specifies the directory path where the ZIP file will be created.
