@@ -216,7 +216,15 @@ The history file includes:
 
 ### CHANGES.patch
 
-A unified diff (`git diff` output) covering all changed files. Can be applied with `git apply` to reproduce the changes.
+A unified diff (`git diff` output) covering all changed files. To apply the patch:
+
+```bash
+# Strict — fails on any context mismatch
+git apply CHANGES.patch
+
+# Forgiving — tolerates offset and fuzz
+patch -p1 < CHANGES.patch
+```
 
 ---
 
