@@ -222,7 +222,10 @@ A unified diff (`git diff` output) covering all changed files. To apply the patc
 # Strict — fails on any context mismatch
 git apply CHANGES.patch
 
-# Forgiving — tolerates offset and fuzz
+# Forgiving — skips hunks that don't apply cleanly
+git apply --3way CHANGES.patch
+
+# Outside a git repo
 patch -p1 < CHANGES.patch
 ```
 
