@@ -18,6 +18,7 @@ builder.Services.AddSingleton<ArchiveService>();
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
-    .WithToolsFromAssembly();
+    .WithToolsFromAssembly()
+    .WithPromptsFromAssembly();
 
 await builder.Build().RunAsync();

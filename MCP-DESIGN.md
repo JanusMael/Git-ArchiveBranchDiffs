@@ -10,7 +10,7 @@ This plan document will live in the repository as `MCP-DESIGN.md` alongside the 
 
 ---
 
-## Scope: 4 Tools
+## Scope: 4 Tools + 5 Prompts
 
 | Tool | Description |
 |---|---|
@@ -238,6 +238,22 @@ Same parameters as `git_archive_diffs`. Adds `-threeWay` flag internally.
 
 ---
 
+## Prompts (Canned Workflows)
+
+The server also exposes 5 MCP prompts — reusable templates that encode multi-step workflows. When an AI selects a prompt, it receives structured instructions that chain tool calls together with analysis guidance.
+
+| Prompt | Arguments | Workflow |
+|---|---|---|
+| `review-changeset` | `leftRef`, `rightRef` | Archive → read → structured code review (summary, file-by-file, issues, test coverage) |
+| `resume-branch` | `baseBranch`, `featureBranch` (default HEAD) | Check list → archive committed changes → archive working tree → branch overview, completed work, in-progress, next steps |
+| `compare-releases` | `fromTag`, `toTag` | Archive between tags → read → release notes (highlights, features, fixes, breaking changes, contributors) |
+| `review-uncommitted` | `baseBranch` (default HEAD) | Archive in workingTree mode → read → pre-commit review (debug code, hardcoded values, security, commit message draft) |
+| `review-staged` | `baseBranch` (default HEAD) | Archive in staged mode → read → focused review of exactly what will be committed, with completeness check and commit message suggestion |
+
+Each prompt tells the AI exactly which tools to call, in what order, and how to structure its analysis output. The AI executes the tools and produces the formatted result.
+
+---
+
 ## Implementation Steps
 
 ### Step 1: Scaffold project
@@ -288,6 +304,7 @@ Same parameters as `git_archive_diffs`. Adds `-threeWay` flag internally.
 | `src/GitArchiveMcp/ArchiveService.cs` | Script invocation + ZIP reading |
 | `src/GitArchiveMcp/ArchiveSession.cs` | Tracks archives for iterative workflows |
 | `src/GitArchiveMcp/Tools/ArchiveTools.cs` | 4 MCP tool definitions |
+| `src/GitArchiveMcp/Prompts/ArchivePrompts.cs` | 5 MCP prompt templates |
 
 ## Dependencies
 
