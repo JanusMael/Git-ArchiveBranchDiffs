@@ -107,4 +107,115 @@ public static class ArchiveTools
     {
         return JsonSerializer.Serialize(session.List(), JsonOptions);
     }
+
+    [McpServerTool(Name = "git_archive_summary"),
+     Description(
+        "Get a quick overview of a diff archive without reading file contents. Returns total " +
+        "file count, lines added/removed, change type breakdown (additions, deletions, " +
+        "modifications, renames), top directories by file count, and binary file count. " +
+        "Use this as a first step after creating an archive to understand the scope and decide " +
+        "which areas to drill into with git_archive_search or git_archive_diff_file. Much " +
+        "faster than git_archive_read for initial triage — especially on archives with " +
+        "hundreds of files.")]
+    public static string GetSummary(
+        ArchiveService archiveService,
+        [Description("Path to the ZIP archive")] string archivePath)
+    {
+        var result = archiveService.GetSummary(archivePath);
+        return JsonSerializer.Serialize(result, JsonOptions);
+    }
+
+    [McpServerTool(Name = "git_archive_diff_file"),
+     Description(
+        "Examine a single file from a diff archive in detail. Given a file path (e.g. " +
+        "'src/App.cs'), returns both the left (base) and right (feature) versions side-by-side, " +
+        "plus the relevant unified diff hunk from CHANGES.patch. Use this after " +
+        "git_archive_summary or git_archive_search to drill into a specific file without " +
+        "loading the entire archive. The path should be the logical file path within the " +
+        "repository (without the branch directory prefix). Returns the change type (added, " +
+        "deleted, modified, renamed) and both versions' content.")]
+    public static string GetDiffFile(
+        ArchiveService archiveService,
+        [Description("Path to the ZIP archive")] string archivePath,
+        [Description("Logical file path within the repo (e.g. 'src/App.cs'), without branch directory prefix")] string filePath)
+    {
+        var result = archiveService.GetDiffFile(archivePath, filePath);
+        return JsonSerializer.Serialize(result, JsonOptions);
+    }
+
+    [McpServerTool(Name = "git_archive_search"),
+     Description(
+        "Search for a pattern across all files in a diff archive. Returns matching lines with " +
+        "file path, line number, and surrounding context lines. Searches both left and right " +
+        "versions of files, skipping binary files and placeholder files. Use this to find " +
+        "where a function is called, locate TODO/FIXME comments, check for debug code, or " +
+        "trace how a pattern appears across the changeset. Supports regex patterns and result " +
+        "limiting. Pair with git_archive_diff_file to examine matches in full context.")]
+    public static string SearchArchive(
+        ArchiveService archiveService,
+        [Description("Path to the ZIP archive")] string archivePath,
+        [Description("Regex pattern to search for (e.g. 'TODO|FIXME', 'console\\.log')")] string pattern,
+        [Description("Number of context lines before and after each match. Defaults to 2.")] int contextLines = 2,
+        [Description("Maximum number of matches to return. Defaults to 50.")] int maxResults = 50,
+        [Description("Optional glob pattern to filter which files to search (e.g. '*.cs')")] string? fileFilter = null)
+    {
+        var result = archiveService.SearchArchive(archivePath, pattern, contextLines, maxResults, fileFilter);
+        return JsonSerializer.Serialize(result, JsonOptions);
+    }
+
+    [McpServerTool(Name = "git_archive_annotate"),
+     Description(
+        "Attach or read notes on a diff archive to track your review progress. Add annotations " +
+        "like 'status=reviewed', 'issues=3', or 'notes=auth flow needs rework' to help you " +
+        "remember where you left off. Annotations persist for the session and appear in " +
+        "git_archive_list output. Use this to track which archives you have reviewed, flag " +
+        "issues found, or leave notes for follow-up. Call with just archivePath to read " +
+        "existing annotations, or with key and value to add/update one.")]
+    public static string Annotate(
+        ArchiveSession session,
+        [Description("Path to the ZIP archive to annotate")] string archivePath,
+        [Description("Annotation key (e.g. 'status', 'issues', 'notes'). Omit to read all annotations.")] string? key = null,
+        [Description("Annotation value (e.g. 'reviewed', '3', 'auth flow needs rework')")] string? value = null)
+    {
+        if (key is not null && value is not null)
+            session.Annotate(archivePath, key, value);
+
+        var annotations = session.GetAnnotations(archivePath);
+        var result = new ArchiveAnnotations(archivePath, annotations);
+        return JsonSerializer.Serialize(result, JsonOptions);
+    }
+
+    [McpServerTool(Name = "git_archive_compare"),
+     Description(
+        "Compare two diff archives to see what changed between them. Useful for incremental " +
+        "code review: if you reviewed an archive earlier and the developer has pushed more " +
+        "commits, create a new archive and compare it to the old one to see only the " +
+        "new/changed files. Returns lists of files that were added, removed, changed, or " +
+        "unchanged between the two archives. This saves you from re-reviewing the entire " +
+        "changeset when only a few files have been updated.")]
+    public static string CompareArchives(
+        ArchiveService archiveService,
+        [Description("Path to the older/previous archive")] string olderArchivePath,
+        [Description("Path to the newer/current archive")] string newerArchivePath)
+    {
+        var result = archiveService.CompareArchives(olderArchivePath, newerArchivePath);
+        return JsonSerializer.Serialize(result, JsonOptions);
+    }
+
+    [McpServerTool(Name = "git_archive_apply_patch"),
+     Description(
+        "Apply the unified diff (CHANGES.patch) from a diff archive to the current working " +
+        "tree using git apply --3way. Use this to replay a changeset onto your branch — for " +
+        "example, to apply changes from a review archive or port fixes between branches. " +
+        "WARNING: This modifies your working tree. Returns the result including any conflicts " +
+        "or rejected hunks. The --3way flag enables merge conflict markers for hunks that " +
+        "don't apply cleanly, so you can resolve them manually.")]
+    public static async Task<string> ApplyPatch(
+        ArchiveService archiveService,
+        [Description("Path to the ZIP archive containing CHANGES.patch")] string archivePath,
+        CancellationToken ct = default)
+    {
+        var result = await archiveService.ApplyPatchAsync(archivePath, ct);
+        return JsonSerializer.Serialize(result, JsonOptions);
+    }
 }
