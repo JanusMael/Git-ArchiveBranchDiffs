@@ -10,16 +10,33 @@ This plan document will live in the repository as `MCP-DESIGN.md` alongside the 
 
 ---
 
-## Scope: 4 Tools + 5 Prompts
+## Scope: 10 Tools + 7 Prompts + Resources
+
+### Creation & bulk consumption
 
 | Tool | Description |
 |---|---|
-| `git_archive_diffs` | Create a ZIP archive of files that differ between two refs |
+| `git_archive_diffs` | Create a ZIP archive of files that differ between two refs (supports `branch`, `workingTree`, and `staged` modes) |
 | `git_archive_three_way` | Create a three-way ZIP archive (base + left + right) |
 | `git_archive_read` | Return the contents of an archive as structured JSON |
-| `git_archive_list` | List all archives created in the current session |
+| `git_archive_list` | List all archives created in the current session, including annotations |
 
-The first two create archives. The third lets the AI consume them. The fourth supports iterative workflows where the AI creates an archive once and revisits it multiple times.
+### Analysis (zoom-in workflow)
+
+Large changesets defeat naive "read everything" reviews. These tools let an AI triage, search, and drill into an archive efficiently — avoiding the context flood of `git_archive_read` on 200-file branches.
+
+| Tool | Description |
+|---|---|
+| `git_archive_summary` | Lightweight scope overview — file counts, line totals, change type breakdown, top directories, binary count. First call after creating an archive. |
+| `git_archive_search` | Regex search across every file in the archive, with configurable context lines, result limits, and glob filter. |
+| `git_archive_diff_file` | Examine one file in detail — returns both sides plus the unified diff hunk from CHANGES.patch. |
+| `git_archive_compare` | Compare two archives to see what changed between reviews (added / removed / changed / unchanged). |
+| `git_archive_annotate` | Attach notes to an archive (`status=reviewed`, `issues=3`, free-form `notes=...`) that persist across calls and appear in `git_archive_list`. |
+| `git_archive_apply_patch` | Replay CHANGES.patch onto the working tree using `git apply --3way`. WARNING: mutates the working tree. |
+
+### Resources
+
+Every archive created during the session is also exposed as an MCP resource under the `archive:///` URI scheme. Reading a resource returns the `git_archive_summary` output (plus metadata and annotations) as JSON — **not** the full contents, to stay lightweight. Clients that subscribe receive `notifications/resources/list_changed` when new archives are created, so the archive list stays live without polling. For full contents, clients should call `git_archive_read`.
 
 ---
 
@@ -123,14 +140,18 @@ Git-ArchiveBranchDiffs/               (existing repo root)
 ├── src/
 │   └── GitArchiveMcp/
 │       ├── GitArchiveMcp.csproj      (.NET 10, Exe)
-│       ├── Program.cs                (host + DI + tool registration)
-│       ├── ArchiveService.cs         (script invocation + ZIP reading)
-│       ├── ArchiveSession.cs         (tracks created archives for iterative use)
-│       └── Tools/
-│           └── ArchiveTools.cs       (4 MCP tools)
+│       ├── Program.cs                (host + DI + tool/prompt/resource registration)
+│       ├── ArchiveService.cs         (script invocation + ZIP reading + analysis)
+│       ├── ArchiveSession.cs         (tracks archives + annotations + list-changed notifications)
+│       ├── Tools/
+│       │   └── ArchiveTools.cs       (10 MCP tools)
+│       ├── Prompts/
+│       │   └── ArchivePrompts.cs     (7 MCP prompts)
+│       └── Resources/
+│           └── ArchiveResources.cs   (dynamic list/read handlers for archive:/// resources)
 ```
 
-~5 files. The PowerShell script does all the heavy lifting.
+The PowerShell script still does archive *creation*. All the new analysis functionality (summary/search/diff_file/compare/apply_patch) lives inside `ArchiveService.cs` and operates directly on the ZIP.
 
 ---
 
@@ -236,21 +257,99 @@ Same parameters as `git_archive_diffs`. Adds `-threeWay` flag internally.
 ]
 ```
 
+### `git_archive_summary`
+
+**MCP Description:**
+> Get a quick overview of a diff archive without reading file contents. Returns total file count, lines added/removed, change type breakdown (additions, deletions, modifications, renames), top directories by file count, and binary file count. Use this as a first step after creating an archive to understand the scope and decide which areas to drill into with git_archive_search or git_archive_diff_file. Much faster than git_archive_read for initial triage — especially on archives with hundreds of files.
+
+**Parameters:** `archivePath`
+
+**Returns:** `ArchiveSummary` with `fileCount`, `linesAdded`, `linesRemoved`, `filesAdded`, `filesDeleted`, `filesModified`, `filesRenamed`, `binaryFiles`, and a `topDirectories` array (up to 10 entries of `{directory, fileCount}`).
+
+### `git_archive_diff_file`
+
+**MCP Description:**
+> Examine a single file from a diff archive in detail. Given a file path (e.g. 'src/App.cs'), returns both the left (base) and right (feature) versions side-by-side, plus the relevant unified diff hunk from CHANGES.patch. Use this after git_archive_summary or git_archive_search to drill into a specific file without loading the entire archive. The path should be the logical file path within the repository (without the branch directory prefix). Returns the change type (added, deleted, modified, renamed) and both versions' content.
+
+**Parameters:** `archivePath`, `filePath` (logical repo path, no branch prefix)
+
+**Returns:** `FileDiffResult` with `path`, `changeType` (added/deleted/modified/renamed), `left` and `right` `FileVersion` objects, and the extracted `diff` hunk.
+
+### `git_archive_search`
+
+**MCP Description:**
+> Search for a pattern across all files in a diff archive. Returns matching lines with file path, line number, and surrounding context lines. Searches both left and right versions of files, skipping binary files and placeholder files. Use this to find where a function is called, locate TODO/FIXME comments, check for debug code, or trace how a pattern appears across the changeset. Supports regex patterns and result limiting. Pair with git_archive_diff_file to examine matches in full context.
+
+**Parameters:** `archivePath`, `pattern` (regex), `contextLines` (default 2), `maxResults` (default 50), optional `fileFilter` glob
+
+**Returns:** `SearchResult` with `totalMatches` and a `matches` array of `{filePath, lineNumber, line, context}`.
+
+### `git_archive_compare`
+
+**MCP Description:**
+> Compare two diff archives to see what changed between them. Useful for incremental code review: if you reviewed an archive earlier and the developer has pushed more commits, create a new archive and compare it to the old one to see only the new/changed files.
+
+**Parameters:** `olderArchivePath`, `newerArchivePath`
+
+**Returns:** `ArchiveComparison` with `addedFiles`, `removedFiles`, `changedFiles`, and `unchangedFiles` arrays.
+
+### `git_archive_annotate`
+
+**MCP Description:**
+> Attach or read notes on a diff archive to track your review progress. Add annotations like 'status=reviewed', 'issues=3', or 'notes=auth flow needs rework'. Annotations persist for the session and appear in git_archive_list output.
+
+**Parameters:** `archivePath`, optional `key`, optional `value`
+
+**Returns:** `ArchiveAnnotations` with all current annotations on the archive.
+
+### `git_archive_apply_patch`
+
+**MCP Description:**
+> Apply the unified diff (CHANGES.patch) from a diff archive to the current working tree using git apply --3way. Use this to replay a changeset onto your branch. WARNING: This modifies your working tree. The --3way flag enables merge conflict markers for hunks that don't apply cleanly.
+
+**Parameters:** `archivePath`
+
+**Returns:** `PatchApplyResult` with `success`, `exitCode`, `standardOutput`, and `standardError`.
+
+---
+
+## Resources
+
+Archives are also exposed via MCP resources so clients that browse resources (rather than call tools) can discover them.
+
+| Aspect | Value |
+|---|---|
+| URI scheme | `archive:///{filename}` |
+| MIME type | `application/json` |
+| Contents | `git_archive_summary` output + session metadata + annotations |
+| List source | `ArchiveSession.List()` — same store as `git_archive_list` |
+| Change notifications | `notifications/resources/list_changed` fired best-effort when `ArchiveSession.Add` is called |
+
+Resources intentionally return the summary, not the full archive contents. This keeps discovery lightweight; clients that need full contents should call `git_archive_read`. Registered via `WithListResourcesHandler` / `WithReadResourceHandler` in `Program.cs` — the handler-based approach is required because the archive list grows dynamically at runtime (attribute-scanned `[McpServerResource]` methods are static).
+
 ---
 
 ## Prompts (Canned Workflows)
 
-The server also exposes 5 MCP prompts — reusable templates that encode multi-step workflows. When an AI selects a prompt, it receives structured instructions that chain tool calls together with analysis guidance.
+The server exposes 7 MCP prompts — reusable templates that encode multi-step workflows. When an AI selects a prompt, it receives structured instructions that chain tool calls together with analysis guidance.
 
 | Prompt | Arguments | Workflow |
 |---|---|---|
 | `review-changeset` | `leftRef`, `rightRef` | Archive → read → structured code review (summary, file-by-file, issues, test coverage) |
+| `triage-changeset` | `leftRef`, `rightRef` | Archive → summary → search for risk patterns → diff_file on high-impact files → annotate findings. Designed for large changesets where reading everything is wasteful. |
+| `incremental-review` | `leftRef`, `rightRef` | List prior archives → create new archive → compare → diff_file on changed/added files → annotate. Focuses review on the delta since the last archive was reviewed. |
 | `resume-branch` | `baseBranch`, `featureBranch` (default HEAD) | Check list → archive committed changes → archive working tree → branch overview, completed work, in-progress, next steps |
 | `compare-releases` | `fromTag`, `toTag` | Archive between tags → read → release notes (highlights, features, fixes, breaking changes, contributors) |
 | `review-uncommitted` | `baseBranch` (default HEAD) | Archive in workingTree mode → read → pre-commit review (debug code, hardcoded values, security, commit message draft) |
 | `review-staged` | `baseBranch` (default HEAD) | Archive in staged mode → read → focused review of exactly what will be committed, with completeness check and commit message suggestion |
 
 Each prompt tells the AI exactly which tools to call, in what order, and how to structure its analysis output. The AI executes the tools and produces the formatted result.
+
+### When to pick which review prompt
+
+- **`review-changeset`** — smaller changesets where reading everything is tractable. Produces a full narrative review.
+- **`triage-changeset`** — large changesets (>50 files) where the "read everything" approach would flood context. Uses summary + search + targeted diff_file to find high-impact issues first.
+- **`incremental-review`** — follow-up review of a branch you already looked at. Compares archives and focuses only on what the developer changed since the last pass.
 
 ---
 

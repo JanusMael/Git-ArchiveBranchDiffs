@@ -1,4 +1,5 @@
 using GitArchiveMcp;
+using GitArchiveMcp.Resources;
 using GitArchiveMcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,6 +20,8 @@ builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
     .WithToolsFromAssembly()
-    .WithPromptsFromAssembly();
+    .WithPromptsFromAssembly()
+    .WithListResourcesHandler(ArchiveResources.ListResourcesAsync)
+    .WithReadResourceHandler(ArchiveResources.ReadResourceAsync);
 
 await builder.Build().RunAsync();
