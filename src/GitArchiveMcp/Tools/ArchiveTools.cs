@@ -28,7 +28,10 @@ public static class ArchiveTools
         "Also ideal for session resumption: archive the base branch vs HEAD to understand " +
         "all committed changes, or use workingTree mode to also capture in-progress work. " +
         "The archive persists on disk and can be read multiple times with git_archive_read " +
-        "using different file filters. Use git_archive_list to see previously created archives.")]
+        "using different file filters. Use git_archive_list to see previously created archives. " +
+        "Archive filenames include a version stamp and short commit hashes so re-running after " +
+        "new commits creates a distinct file instead of overwriting. Use git_archive_compare to " +
+        "diff two snapshots of the same branch comparison.")]
     public static async Task<string> CreateArchive(
         ArchiveService archiveService,
         ArchiveSession session,
@@ -36,7 +39,7 @@ public static class ArchiveTools
         [Description("Feature ref — branch, tag, or commit. Omit when mode is 'workingTree' or 'staged'.")] string? rightRef = null,
         [Description("Comparison mode: 'branch' (default, requires rightRef), 'workingTree' (uncommitted changes), or 'staged' (indexed changes)")] string mode = "branch",
         [Description("Directory to write the ZIP to. Defaults to a temp directory.")] string? outputDirectory = null,
-        [Description("Custom filename for the ZIP. Auto-generated if omitted.")] string? archiveFileName = null,
+        [Description("Custom filename for the ZIP. Auto-generated with version stamp and commit hashes if omitted.")] string? archiveFileName = null,
         CancellationToken ct = default)
     {
         var result = await archiveService.CreateArchiveAsync(
@@ -55,14 +58,16 @@ public static class ArchiveTools
         "The archive contains base/, left/, and right/ directories so you can see what each " +
         "side changed independently. Use this when you need to understand conflicting changes " +
         "or review a merge. Like git_archive_diffs, the archive persists for iterative review " +
-        "via git_archive_read.")]
+        "via git_archive_read. " +
+        "Archive filenames include a version stamp and short commit hashes so re-running after " +
+        "new commits creates a distinct file instead of overwriting.")]
     public static async Task<string> CreateThreeWayArchive(
         ArchiveService archiveService,
         ArchiveSession session,
         [Description("Base ref — branch, tag, or commit (e.g. 'main')")] string leftRef,
         [Description("Feature ref — branch, tag, or commit")] string rightRef,
         [Description("Directory to write the ZIP to. Defaults to a temp directory.")] string? outputDirectory = null,
-        [Description("Custom filename for the ZIP. Auto-generated if omitted.")] string? archiveFileName = null,
+        [Description("Custom filename for the ZIP. Auto-generated with version stamp and commit hashes if omitted.")] string? archiveFileName = null,
         CancellationToken ct = default)
     {
         var result = await archiveService.CreateArchiveAsync(

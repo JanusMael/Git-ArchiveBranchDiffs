@@ -101,7 +101,10 @@ Param (
 	[switch]$staged,
 
 	[parameter(Mandatory=$false)]
-	[switch]$threeWay
+	[switch]$threeWay,
+
+	[parameter(Mandatory=$false)]
+	[switch]$versionedName
 )
 
 Set-StrictMode -Version Latest
@@ -1340,12 +1343,44 @@ class GitDiffBranch {
 
 	[System.IO.DirectoryInfo]$RootDirectory
 
-	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory) 
+	[string] GetVersionedArchiveName()
 	{
-		return $this.CreateDiffsZip($outputDirectory, $null)
+		[string]$leftName = $this.LeftBranch.Directory.Name
+		[string]$rightName = $this.RightBranch.Directory.Name
+		[string]$threeWayPrefix = $(if($this.ThreeWayMode) { "3way " } else { "" })
+
+		# Version from newer commit
+		[System.DateTimeOffset]$leftDate = $this.LeftBranch.Branch.CommitDate
+		[System.DateTimeOffset]$rightDate = $this.RightBranch.Branch.CommitDate
+		[System.DateTimeOffset]$versionDate = $(if($rightDate -gt $leftDate) { $rightDate } else { $leftDate })
+		[string]$version = [GitTool]::GetBuildVersion($versionDate)
+
+		# Left hash (always a commit)
+		[string]$leftHash = $this.LeftBranch.Branch.CommitHash
+		if($leftHash.Length -gt 7) { $leftHash = $leftHash.Substring(0, 7) }
+
+		# Right hash (commit, working-tree, or staged)
+		[string]$rightToken = $null
+		if($this.RightBranch.Branch.Kind -eq [RevisionKind]::WorkTree) {
+			$rightToken = $leftHash + "+wt"
+		}
+		elseif($this.RightBranch.Branch.Kind -eq [RevisionKind]::Staged) {
+			$rightToken = $leftHash + "+stg"
+		}
+		else {
+			$rightToken = $this.RightBranch.Branch.CommitHash
+			if($rightToken.Length -gt 7) { $rightToken = $rightToken.Substring(0, 7) }
+		}
+
+		return "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName ($leftHash..$rightToken $version).zip"
 	}
 
-	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName) 
+	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory)
+	{
+		return $this.CreateDiffsZip($outputDirectory, $null, $false)
+	}
+
+	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName) 
 	{
 		if($null -eq $outputDirectory) {
 			Write-Fail "outputDirectory should not be null"
@@ -1399,10 +1434,15 @@ class GitDiffBranch {
 
 		if([string]::IsNullOrWhiteSpace($archiveFileName))
 		{
-			[string]$leftName = $this.LeftBranch.Directory.Name
-			[string]$rightName = $this.RightBranch.Directory.Name
-			[string]$threeWayPrefix = $(if($this.ThreeWayMode) { "3way " } else { "" })
-			$archiveFileName = "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName.zip"
+			if($versionedName) {
+				$archiveFileName = $this.GetVersionedArchiveName()
+			}
+			else {
+				[string]$leftName = $this.LeftBranch.Directory.Name
+				[string]$rightName = $this.RightBranch.Directory.Name
+				[string]$threeWayPrefix = $(if($this.ThreeWayMode) { "3way " } else { "" })
+				$archiveFileName = "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName.zip"
+			}
 		}
 		elseif(-not $(Get-ExtensionEquals $archiveFileName ".zip"))
 		{
@@ -2220,14 +2260,14 @@ class GitTool {
 
 	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory)
 	{
-		return [GitTool]::ArchiveBranchDiffs($leftBranchName, $rightBranchName, $outputDirectory, $null)
+		return [GitTool]::ArchiveBranchDiffs($leftBranchName, $rightBranchName, $outputDirectory, $null, $false)
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName)
 	{
 		[GitDiffBranch]$diffBranch = [GitDiffBranch]::new($leftBranchName, $rightBranchName)
 
-		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName, $versionedName)
 
         if($null -eq $archiveFile)
         {
@@ -2236,11 +2276,11 @@ class GitTool {
 		return $archiveFile
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffs([GitBranch]$leftBranch, [GitBranch]$rightBranch, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	static [System.IO.FileInfo] ArchiveBranchDiffs([GitBranch]$leftBranch, [GitBranch]$rightBranch, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName)
 	{
 		[GitDiffBranch]$diffBranch = [GitDiffBranch]::new($leftBranch, $rightBranch)
 
-		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName, $versionedName)
 
 		if($null -eq $archiveFile)
 		{
@@ -2249,11 +2289,11 @@ class GitTool {
 		return $archiveFile
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffsThreeWay([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	static [System.IO.FileInfo] ArchiveBranchDiffsThreeWay([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName)
 	{
 		[GitDiffBranch]$diffBranch = [GitDiffBranch]::ForThreeWay($leftBranchName, $rightBranchName)
 
-		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName, $versionedName)
 
 		if($null -eq $archiveFile)
 		{
@@ -2375,6 +2415,12 @@ class GitTool {
 		#%ci is 'commit date' + 'iso'
 		[string]$commitDateRaw = git log -n 1 --pretty="format:%ci" $branchName
 		return [System.DateTimeOffset]::Parse($commitDateRaw)
+	}
+
+	static [string] GetBuildVersion([System.DateTimeOffset]$dt)
+	{
+		[int]$quarter = [System.Math]::Ceiling($dt.Month / 3.0)
+		return "$($dt.Year).$quarter.$($dt.ToString('MMdd')).$($dt.ToString('HHmm'))"
 	}
 
 	static [bool] IsPossibleCommitHash([string]$branchOrHash) {
@@ -3007,7 +3053,7 @@ if($workingTree) {
 	Write-Host "  Found $($dirty.Length) uncommitted change(s) in working tree." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
 	[GitBranch]$rightBranchObj = [GitBranch]::ForWorkTree()
-	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName, $versionedName.IsPresent)
 }
 elseif($staged) {
 	[GitStatusEntry[]]$status = [GitTool]::GetStatus()
@@ -3022,13 +3068,13 @@ elseif($staged) {
 	Write-Host "  Found $($stagedEntries.Length) staged change(s)." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
 	[GitBranch]$rightBranchObj = [GitBranch]::ForStaged()
-	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName, $versionedName.IsPresent)
 }
 elseif($threeWay) {
-	$archiveFile = [GitTool]::ArchiveBranchDiffsThreeWay($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffsThreeWay($leftBranch, $rightBranch, $outputDirectory, $archiveFileName, $versionedName.IsPresent)
 }
 else {
-	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName, $versionedName.IsPresent)
 }
 
 $script:stopwatch.Stop()

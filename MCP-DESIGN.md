@@ -166,6 +166,35 @@ The PowerShell script still does archive *creation*. All the new analysis functi
 | Text file reading | UTF-8 with binary detection | Skip binary files, return text contents |
 | Large file cap | Truncate files > 100KB in `git_archive_read` | Prevent blowing context windows |
 | Session tracking | In-memory `ArchiveSession` singleton | Supports `git_archive_list` and iterative workflows |
+| Versioned naming | Always pass `-versionedName` to PS1 | Prevents overwrites when branches advance between MCP calls |
+
+---
+
+## Archive Naming Convention
+
+The MCP server always creates archives with **versioned filenames** to prevent overwrites when the same branch comparison is re-run after new commits.
+
+**Format**: `{leftName} ⟷ {rightName} ({leftHash}..{rightHash} {version}).zip`
+
+**Version timestamp** (adapted from [BuildVersion](../BuildVersion.cs)):
+`Year.Quarter.MMdd.HHmm` computed from the **newer** commit's `CommitDate`.
+Quarter = ⌈Month / 3⌉.
+
+**Hash tokens**:
+- Normal refs: 7-char short hash from the commit
+- Working tree: `{HEAD-hash}+wt`
+- Staged: `{HEAD-hash}+stg`
+
+**Examples**:
+
+| Mode | Filename |
+|------|----------|
+| Branch | `main ⟷ f_my-feature (abc1234..def5678 2026.2.0413.1430).zip` |
+| Three-way | `3way main ⟷ f_my-feature (abc1234..def5678 2026.2.0413.1430).zip` |
+| Working tree | `main ⟷ WORKING-TREE (abc1234..abc1234+wt 2026.2.0413.1502).zip` |
+| Staged | `main ⟷ STAGED (abc1234..abc1234+stg 2026.2.0413.1502).zip` |
+
+This enables `git_archive_compare` to diff two snapshots of the same branch comparison taken at different points in time. An explicit `-archiveFileName` parameter always takes precedence.
 
 ---
 

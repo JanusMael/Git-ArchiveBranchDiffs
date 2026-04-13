@@ -39,6 +39,7 @@ public sealed partial class ArchiveService
         var scriptArgs = new List<string>
         {
             "-nonInteractive",
+            "-versionedName",
             "-leftBranch", leftRef,
             "-outputDirectory", outputDirectory
         };

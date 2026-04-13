@@ -90,6 +90,7 @@ pwsh ./Git-ArchiveBranchDiffs.ps1 -nonInteractive
 | `-workingTree` | No | `$false` | Compare uncommitted working tree changes against the left branch |
 | `-staged` | No | `$false` | Compare staged (indexed) changes against the left branch |
 | `-threeWay` | No | `$false` | Produce a three-way diff with base, left, and right directories |
+| `-versionedName` | No | `$false` | Include commit hashes and a version timestamp in the archive filename |
 
 ---
 
@@ -144,7 +145,24 @@ The `-nonInteractive` switch enables fully scripted usage with no prompts. Smart
 | `-leftBranch` | Default remote branch via `git symbolic-ref` |
 | `-rightBranch` | Currently checked-out branch (falls back to HEAD on detached HEAD) |
 | `-outputDirectory` | Current working directory |
-| `-archiveFileName` | `<leftBranch> ⟷ <rightBranch>.zip` |
+| `-archiveFileName` | `<leftBranch> ⟷ <rightBranch>.zip` (or versioned, see below) |
+
+### Versioned Archive Names (`-versionedName`)
+
+When `-versionedName` is set, the auto-generated filename includes short commit hashes and a version timestamp derived from the commit date. This prevents overwrites when re-running the tool after new commits land on the same branches.
+
+**Format**: `{leftName} ⟷ {rightName} ({leftHash}..{rightHash} {Year}.{Quarter}.{MMdd}.{HHmm}).zip`
+
+**Examples**:
+
+| Mode | Filename |
+|------|----------|
+| Branch | `main ⟷ f_my-feature (abc1234..def5678 2026.2.0413.1430).zip` |
+| Three-way | `3way main ⟷ f_my-feature (abc1234..def5678 2026.2.0413.1430).zip` |
+| Working tree | `main ⟷ WORKING-TREE (abc1234..abc1234+wt 2026.2.0413.1502).zip` |
+| Staged | `main ⟷ STAGED (abc1234..abc1234+stg 2026.2.0413.1502).zip` |
+
+The version uses the newer commit's date (adapted from the [BuildVersion](https://github.com/nicholasgasior/buildversion) algorithm): `Year.Quarter.MMdd.HHmm` where Quarter = ⌈Month / 3⌉. An explicit `-archiveFileName` always takes precedence over versioned naming.
 
 ### Examples
 
