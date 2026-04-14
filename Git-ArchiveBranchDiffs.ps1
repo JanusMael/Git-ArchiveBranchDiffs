@@ -1355,9 +1355,14 @@ class GitDiffBranch {
 		[System.DateTimeOffset]$versionDate = $(if($rightDate -gt $leftDate) { $rightDate } else { $leftDate })
 		[string]$version = [GitTool]::GetBuildVersion($versionDate)
 
-		# Left hash (always a commit)
+		# Left hash (always a commit, but guard against null for safety)
 		[string]$leftHash = $this.LeftBranch.Branch.CommitHash
-		if($leftHash.Length -gt 7) { $leftHash = $leftHash.Substring(0, 7) }
+		if([string]::IsNullOrWhiteSpace($leftHash)) {
+			$leftHash = "unknown"
+		}
+		elseif($leftHash.Length -gt 7) {
+			$leftHash = $leftHash.Substring(0, 7)
+		}
 
 		# Right hash (commit, working-tree, or staged)
 		[string]$rightToken = $null
@@ -1368,8 +1373,16 @@ class GitDiffBranch {
 			$rightToken = $leftHash + "+stg"
 		}
 		else {
-			$rightToken = $this.RightBranch.Branch.CommitHash
-			if($rightToken.Length -gt 7) { $rightToken = $rightToken.Substring(0, 7) }
+			[string]$rightHash = $this.RightBranch.Branch.CommitHash
+			if([string]::IsNullOrWhiteSpace($rightHash)) {
+				$rightToken = "unknown"
+			}
+			elseif($rightHash.Length -gt 7) {
+				$rightToken = $rightHash.Substring(0, 7)
+			}
+			else {
+				$rightToken = $rightHash
+			}
 		}
 
 		return "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName ($leftHash..$rightToken $version).zip"

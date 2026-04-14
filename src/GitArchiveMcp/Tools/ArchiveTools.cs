@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using ModelContextProtocol.Server;
 
 namespace GitArchiveMcp.Tools;
@@ -8,12 +7,7 @@ namespace GitArchiveMcp.Tools;
 [McpServerToolType]
 public static class ArchiveTools
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
+    private static readonly JsonSerializerOptions JsonOptions = JsonDefaults.Options;
 
     [McpServerTool(Name = "git_archive_diffs"),
      Description(

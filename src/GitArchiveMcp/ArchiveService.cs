@@ -163,14 +163,12 @@ public sealed partial class ArchiveService
                 {
                     content = "[truncated — file exceeds 100KB]";
                 }
-                else if (IsBinaryEntry(entry))
-                {
-                    content = "[binary file]";
-                }
                 else
                 {
-                    using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
-                    content = reader.ReadToEnd();
+                    var bytes = ReadEntryBytes(entry);
+                    content = IsBinaryBytes(bytes)
+                        ? "[binary file]"
+                        : Encoding.UTF8.GetString(bytes);
                 }
             }
 
@@ -199,10 +197,24 @@ public sealed partial class ArchiveService
     [GeneratedRegex(@"-[RC]\d{3}$")]
     private static partial Regex PlaceholderRenamePattern();
 
+    // Reads the full (uncompressed) content of an entry in one pass.
+    // For entries already known to be <= 100KB; callers should gate on Length first.
+    private static byte[] ReadEntryBytes(ZipArchiveEntry entry)
+    {
+        var bytes = new byte[entry.Length];
+        using var stream = entry.Open();
+        stream.ReadExactly(bytes);
+        return bytes;
+    }
+
+    private static bool IsBinaryBytes(ReadOnlySpan<byte> bytes) =>
+        bytes.Contains((byte)0);
+
+    // Kept for use by GetSummary, which only needs the binary flag without content.
     private static bool IsBinaryEntry(ZipArchiveEntry entry)
     {
         using var stream = entry.Open();
-        var buffer = new byte[Math.Min(8192, entry.Length)];
+        var buffer = new byte[Math.Min(8192, (int)entry.Length)];
         var bytesRead = stream.Read(buffer, 0, buffer.Length);
         return buffer.AsSpan(0, bytesRead).Contains((byte)0);
     }
@@ -375,6 +387,11 @@ public sealed partial class ArchiveService
         // Remove known non-branch directories
         topDirs.Remove("manifest");
 
+        // Compute once; "right" side is the last directory alphabetically
+        var sortedDirs = topDirs.OrderBy(d => d).ToList();
+        var rightDir = sortedDirs.Count > 1 ? sortedDirs[^1] : sortedDirs.FirstOrDefault();
+        var leftDirForAdded = sortedDirs.Count > 1 ? sortedDirs[0] : null;
+
         foreach (var entry in zip.Entries)
         {
             if (string.IsNullOrEmpty(entry.Name))
@@ -406,11 +423,6 @@ public sealed partial class ArchiveService
             if (slash < 0) continue;
             var topDir = entry.FullName[..slash];
 
-            // Use the second top-level directory as the "right" side for counting
-            // (or first if only one exists, e.g. base/ in three-way)
-            var sortedDirs = topDirs.OrderBy(d => d).ToList();
-            var rightDir = sortedDirs.Count > 1 ? sortedDirs[^1] : sortedDirs.FirstOrDefault();
-
             if (!string.Equals(topDir, rightDir, StringComparison.OrdinalIgnoreCase))
                 continue;
 
@@ -432,14 +444,12 @@ public sealed partial class ArchiveService
             }
             else
             {
-                // Check if corresponding left-side placeholder exists
-                var leftPath = sortedDirs.Count > 1 ? sortedDirs[0] + "/" + relativePath : null;
-                var leftEntry = leftPath is not null ? zip.GetEntry(leftPath) : null;
-                var leftPlaceholder = leftPath is not null
-                    ? zip.GetEntry(leftPath + "-added")
+                // Check if corresponding left-side -added placeholder exists
+                var leftAddedPlaceholder = leftDirForAdded is not null
+                    ? zip.GetEntry($"{leftDirForAdded}/{relativePath}-added")
                     : null;
 
-                if (leftPlaceholder is not null)
+                if (leftAddedPlaceholder is not null)
                     filesAdded++;
                 else
                     filesModified++;
@@ -595,18 +605,15 @@ public sealed partial class ArchiveService
             if (fileFilter is not null && !MatchesGlob(entryPath, fileFilter))
                 continue;
 
-            if (IsBinaryEntry(entry))
+            // Read once; check binary inline (avoids opening the stream twice)
+            var rawBytes = ReadEntryBytes(entry);
+            if (IsBinaryBytes(rawBytes))
                 continue;
 
-            // Read all lines
-            List<string> lines;
-            using (var reader = new StreamReader(entry.Open(), Encoding.UTF8))
-            {
-                lines = [];
-                string? line;
-                while ((line = reader.ReadLine()) is not null)
-                    lines.Add(line);
-            }
+            var lines = Encoding.UTF8.GetString(rawBytes)
+                .Split('\n')
+                .Select(l => l.TrimEnd('\r'))
+                .ToList();
 
             for (int i = 0; i < lines.Count; i++)
             {
@@ -702,14 +709,14 @@ public sealed partial class ArchiveService
 
     private static FileVersion? ReadFileVersion(ZipArchiveEntry entry)
     {
+        var path = entry.FullName.Replace('\\', '/');
+
         if (entry.Length > 100 * 1024)
-            return new FileVersion(entry.FullName.Replace('\\', '/'), entry.Length, "[truncated — file exceeds 100KB]");
+            return new FileVersion(path, entry.Length, "[truncated — file exceeds 100KB]");
 
-        if (IsBinaryEntry(entry))
-            return new FileVersion(entry.FullName.Replace('\\', '/'), entry.Length, "[binary file]");
-
-        using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
-        return new FileVersion(entry.FullName.Replace('\\', '/'), entry.Length, reader.ReadToEnd());
+        var bytes = ReadEntryBytes(entry);
+        var content = IsBinaryBytes(bytes) ? "[binary file]" : Encoding.UTF8.GetString(bytes);
+        return new FileVersion(path, entry.Length, content);
     }
 
     private static ZipArchiveEntry? FindRenamedEntry(ZipArchive zip, string dir, string filePath)
@@ -749,7 +756,7 @@ public sealed partial class ArchiveService
         return sb.Length > 0 ? sb.ToString().TrimEnd() : null;
     }
 
-    private static Dictionary<string, long> GetFileChecksums(string archivePath)
+    private static Dictionary<string, string> GetFileChecksums(string archivePath)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         using var zip = ZipFile.OpenRead(archivePath);
@@ -772,8 +779,7 @@ public sealed partial class ArchiveService
             result[relativePath] = $"{entry.Length}:{entry.Crc32}";
         }
 
-        // Return as long-keyed dict for the comparison (reuse the string composite)
-        return result.ToDictionary(kv => kv.Key, kv => (long)kv.Value.GetHashCode());
+        return result;
     }
 
     private record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
