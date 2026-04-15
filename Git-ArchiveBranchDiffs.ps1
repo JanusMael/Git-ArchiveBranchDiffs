@@ -101,7 +101,16 @@ Param (
 	[switch]$staged,
 
 	[parameter(Mandatory=$false)]
-	[switch]$threeWay
+	[switch]$threeWay,
+
+	[parameter(Mandatory=$false)]
+	[switch]$versionedName,
+
+	[parameter(Mandatory=$false)]
+	[int]$patchContextLines = 5,
+
+	[parameter(Mandatory=$false)]
+	[switch]$noMergesInHistory
 )
 
 Set-StrictMode -Version Latest
@@ -1335,17 +1344,64 @@ class GitDiffBranch {
 	[GitBranchDirectory]$RightBranch
 	[GitBranchDirectory]$BaseBranch
 	[bool]$ThreeWayMode
+	[int]$PatchContextLines = 5
+	[bool]$NoMergesInHistory = $false
 	[System.IO.FileInfo]$HistoryFile
 	[System.IO.FileInfo]$PatchFile
 
 	[System.IO.DirectoryInfo]$RootDirectory
 
-	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory) 
+	[string] GetVersionedArchiveName()
 	{
-		return $this.CreateDiffsZip($outputDirectory, $null)
+		[string]$leftName = $this.LeftBranch.Directory.Name
+		[string]$rightName = $this.RightBranch.Directory.Name
+		[string]$threeWayPrefix = $(if($this.ThreeWayMode) { "3way " } else { "" })
+
+		# Version from newer commit
+		[System.DateTimeOffset]$leftDate = $this.LeftBranch.Branch.CommitDate
+		[System.DateTimeOffset]$rightDate = $this.RightBranch.Branch.CommitDate
+		[System.DateTimeOffset]$versionDate = $(if($rightDate -gt $leftDate) { $rightDate } else { $leftDate })
+		[string]$version = [GitTool]::GetBuildVersion($versionDate)
+
+		# Left hash (always a commit, but guard against null for safety)
+		[string]$leftHash = $this.LeftBranch.Branch.CommitHash
+		if([string]::IsNullOrWhiteSpace($leftHash)) {
+			$leftHash = "unknown"
+		}
+		elseif($leftHash.Length -gt 7) {
+			$leftHash = $leftHash.Substring(0, 7)
+		}
+
+		# Right hash (commit, working-tree, or staged)
+		[string]$rightToken = $null
+		if($this.RightBranch.Branch.Kind -eq [RevisionKind]::WorkTree) {
+			$rightToken = $leftHash + "+wt"
+		}
+		elseif($this.RightBranch.Branch.Kind -eq [RevisionKind]::Staged) {
+			$rightToken = $leftHash + "+stg"
+		}
+		else {
+			[string]$rightHash = $this.RightBranch.Branch.CommitHash
+			if([string]::IsNullOrWhiteSpace($rightHash)) {
+				$rightToken = "unknown"
+			}
+			elseif($rightHash.Length -gt 7) {
+				$rightToken = $rightHash.Substring(0, 7)
+			}
+			else {
+				$rightToken = $rightHash
+			}
+		}
+
+		return "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName ($leftHash..$rightToken $version).zip"
 	}
 
-	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName) 
+	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory)
+	{
+		return $this.CreateDiffsZip($outputDirectory, $null, $false)
+	}
+
+	[System.IO.FileInfo] CreateDiffsZip([System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName) 
 	{
 		if($null -eq $outputDirectory) {
 			Write-Fail "outputDirectory should not be null"
@@ -1399,10 +1455,15 @@ class GitDiffBranch {
 
 		if([string]::IsNullOrWhiteSpace($archiveFileName))
 		{
-			[string]$leftName = $this.LeftBranch.Directory.Name
-			[string]$rightName = $this.RightBranch.Directory.Name
-			[string]$threeWayPrefix = $(if($this.ThreeWayMode) { "3way " } else { "" })
-			$archiveFileName = "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName.zip"
+			if($versionedName) {
+				$archiveFileName = $this.GetVersionedArchiveName()
+			}
+			else {
+				[string]$leftName = $this.LeftBranch.Directory.Name
+				[string]$rightName = $this.RightBranch.Directory.Name
+				[string]$threeWayPrefix = $(if($this.ThreeWayMode) { "3way " } else { "" })
+				$archiveFileName = "$threeWayPrefix$leftName$([GitDiff]::BranchDiffSeparator)$rightName.zip"
+			}
 		}
 		elseif(-not $(Get-ExtensionEquals $archiveFileName ".zip"))
 		{
@@ -1469,10 +1530,10 @@ class GitDiffBranch {
 
 		# Get structured commits on each side that touched diff'd files
 		[string]$rightBranchName = $this.RightBranch.Branch.BranchName
-		[GitLogEntry[]]$rightLog = [GitTool]::GetLog("$mergeBase..$rightHash", 0, $fileArgs)
+		[GitLogEntry[]]$rightLog = [GitTool]::GetLog("$mergeBase..$rightHash", 0, $fileArgs, $this.NoMergesInHistory)
 
 		[string]$leftBranchName = $this.LeftBranch.Branch.BranchName
-		[GitLogEntry[]]$leftLog = [GitTool]::GetLog("$mergeBase..$leftHash", 0, $fileArgs)
+		[GitLogEntry[]]$leftLog = [GitTool]::GetLog("$mergeBase..$leftHash", 0, $fileArgs, $this.NoMergesInHistory)
 
 		if($rightLog.Length -eq 0 -and $leftLog.Length -eq 0) { return $null }
 
@@ -1577,6 +1638,15 @@ class GitDiffBranch {
 		[bool]$includePerCommitFiles = ($log.Length -le $perCommitFilesCap)
 		foreach($entry in $log) {
 			$lines.Add("- $entry")
+			# Render commit body (multi-line) as blockquote lines when present
+			if(-not [string]::IsNullOrWhiteSpace($entry.Body)) {
+				foreach($bodyLine in $entry.Body.Split("`n")) {
+					[string]$trimmed = $bodyLine.TrimEnd()
+					if($trimmed.Length -gt 0) {
+						$lines.Add("  > $trimmed")
+					}
+				}
+			}
 			if(-not $includePerCommitFiles) { continue }
 			[GitDiff[]]$touched = [GitTool]::GetCommitFiles($entry.Hash)
 			foreach($d in $touched) {
@@ -1606,24 +1676,32 @@ class GitDiffBranch {
 	{
 		[string]$leftHash = $this.LeftBranch.Branch.CommitHash
 		[RevisionKind]$rightKind = $this.RightBranch.Branch.Kind
+		[string[]]$statLines = @()
 		[string[]]$patchLines = @()
 
+		[string]$contextFlag = "-U$($this.PatchContextLines)"
 		if($rightKind -eq [RevisionKind]::WorkTree) {
-			$patchLines = @(git --no-pager diff $leftHash 2>$null)
+			$statLines  = @(git --no-pager diff --stat --find-renames --find-copies $leftHash 2>$null)
+			$patchLines = @(git --no-pager diff $contextFlag --find-renames --find-copies $leftHash 2>$null)
 		}
 		elseif($rightKind -eq [RevisionKind]::Staged) {
-			$patchLines = @(git --no-pager diff --staged $leftHash 2>$null)
+			$statLines  = @(git --no-pager diff --staged --stat --find-renames --find-copies $leftHash 2>$null)
+			$patchLines = @(git --no-pager diff --staged $contextFlag --find-renames --find-copies $leftHash 2>$null)
 		}
 		else {
 			[string]$rightHash = $this.RightBranch.Branch.CommitHash
-			$patchLines = @(git --no-pager diff $leftHash $rightHash 2>$null)
+			$statLines  = @(git --no-pager diff --stat --find-renames --find-copies $leftHash $rightHash 2>$null)
+			$patchLines = @(git --no-pager diff $contextFlag --find-renames --find-copies $leftHash $rightHash 2>$null)
 		}
 
 		if($LASTEXITCODE -ne 0 -or $null -eq $patchLines -or $patchLines.Length -eq 0) {
 			return $null
 		}
 
-		[string]$patchContent = [string]::Join([System.Environment]::NewLine, $patchLines)
+		# Prepend --stat summary block so readers get an immediate overview before the hunks.
+		# git apply ignores non-diff lines before the first "diff --git" line, so this is safe.
+		[string[]]$combined = if($statLines.Length -gt 0) { $statLines + @("") + $patchLines } else { $patchLines }
+		[string]$patchContent = [string]::Join([System.Environment]::NewLine, $combined)
 		[string]$patchFilePath = [System.IO.Path]::Combine($this.RootDirectory.FullName, "CHANGES.patch")
 		[System.IO.File]::WriteAllText($patchFilePath, $patchContent, [System.Text.Encoding]::UTF8)
 
@@ -1913,36 +1991,44 @@ class GitLogEntry {
 	[string]$AuthorEmail
 	[System.DateTimeOffset]$AuthorDate
 	[string]$Subject
+	[string]$Body  # Optional multi-line commit body (paragraphs after the subject)
 
-	GitLogEntry([string]$hash, [string]$shortHash, [string]$authorName, [string]$authorEmail, [System.DateTimeOffset]$authorDate, [string]$subject) {
+	GitLogEntry([string]$hash, [string]$shortHash, [string]$authorName, [string]$authorEmail, [System.DateTimeOffset]$authorDate, [string]$subject, [string]$body) {
 		$this.Hash = $hash
 		$this.ShortHash = $shortHash
 		$this.AuthorName = $authorName
 		$this.AuthorEmail = $authorEmail
 		$this.AuthorDate = $authorDate
 		$this.Subject = $subject
+		$this.Body = $body
 	}
 
-	# Parses a single git-log line formatted with FieldSeparator-separated columns.
-	# Expected fields: hash, shortHash, author name, author email, author date (ISO 8601), subject.
-	static [string] $FieldSeparator = [char]0x1f  # ASCII Unit Separator
+	# FieldSeparator: ASCII Unit Separator (0x1f) — never appears in commit messages.
+	# RecordSeparator: ASCII Record Separator (0x1e) — appended after %b to delimit commits.
+	# With %b potentially spanning multiple lines, we collect all output, split on RS, then FS.
+	static [string] $FieldSeparator  = [char]0x1f
+	static [string] $RecordSeparator = [char]0x1e
 
-	# Builds the --format argument string that produces one line per commit
-	# with fields separated by FieldSeparator. Matches the fields consumed by Parse().
+	# Builds the --format argument string. Each commit ends with a RecordSeparator so the
+	# multi-line %b (body) can be parsed correctly by GetLog().
 	static [string] GetLogFormat() {
 		[string]$fs = [GitLogEntry]::FieldSeparator
-		return "%H$fs%h$fs%an$fs%ae$fs%aI$fs%s"
+		[string]$rs = [GitLogEntry]::RecordSeparator
+		return "%H$fs%h$fs%an$fs%ae$fs%aI$fs%s$fs%b$rs"
 	}
 
-	static [GitLogEntry] Parse([string]$line) {
-		if([string]::IsNullOrEmpty($line)) { return $null }
-		[string[]]$parts = $line.Split([GitLogEntry]::FieldSeparator)
+	# Parses a single commit record (may contain embedded newlines from %b).
+	# Expected fields: hash, shortHash, author name, author email, author date, subject, body.
+	static [GitLogEntry] Parse([string]$record) {
+		if([string]::IsNullOrWhiteSpace($record)) { return $null }
+		[string[]]$parts = $record.Split([GitLogEntry]::FieldSeparator, 7)
 		if($parts.Length -lt 6) { return $null }
 		[System.DateTimeOffset]$dto = [System.DateTimeOffset]::MinValue
 		if(-not [System.DateTimeOffset]::TryParse($parts[4], [ref]$dto)) {
 			$dto = [System.DateTimeOffset]::MinValue
 		}
-		return [GitLogEntry]::new($parts[0], $parts[1], $parts[2], $parts[3], $dto, $parts[5])
+		[string]$body = if($parts.Length -ge 7) { $parts[6].Trim() } else { "" }
+		return [GitLogEntry]::new($parts[0], $parts[1], $parts[2], $parts[3], $dto, $parts[5], $body)
 	}
 
 	[string] ToString() {
@@ -2220,14 +2306,16 @@ class GitTool {
 
 	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory)
 	{
-		return [GitTool]::ArchiveBranchDiffs($leftBranchName, $rightBranchName, $outputDirectory, $null)
+		return [GitTool]::ArchiveBranchDiffs($leftBranchName, $rightBranchName, $outputDirectory, $null, $false, 5, $false)
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	static [System.IO.FileInfo] ArchiveBranchDiffs([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName, [int]$patchContextLines, [bool]$noMergesInHistory)
 	{
 		[GitDiffBranch]$diffBranch = [GitDiffBranch]::new($leftBranchName, $rightBranchName)
+		$diffBranch.PatchContextLines = $patchContextLines
+		$diffBranch.NoMergesInHistory = $noMergesInHistory
 
-		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName, $versionedName)
 
         if($null -eq $archiveFile)
         {
@@ -2236,11 +2324,13 @@ class GitTool {
 		return $archiveFile
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffs([GitBranch]$leftBranch, [GitBranch]$rightBranch, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	static [System.IO.FileInfo] ArchiveBranchDiffs([GitBranch]$leftBranch, [GitBranch]$rightBranch, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName, [int]$patchContextLines, [bool]$noMergesInHistory)
 	{
 		[GitDiffBranch]$diffBranch = [GitDiffBranch]::new($leftBranch, $rightBranch)
+		$diffBranch.PatchContextLines = $patchContextLines
+		$diffBranch.NoMergesInHistory = $noMergesInHistory
 
-		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName, $versionedName)
 
 		if($null -eq $archiveFile)
 		{
@@ -2249,11 +2339,13 @@ class GitTool {
 		return $archiveFile
 	}
 
-	static [System.IO.FileInfo] ArchiveBranchDiffsThreeWay([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName)
+	static [System.IO.FileInfo] ArchiveBranchDiffsThreeWay([string]$leftBranchName, [string]$rightBranchName, [System.IO.DirectoryInfo]$outputDirectory, [string]$archiveFileName, [bool]$versionedName, [int]$patchContextLines, [bool]$noMergesInHistory)
 	{
 		[GitDiffBranch]$diffBranch = [GitDiffBranch]::ForThreeWay($leftBranchName, $rightBranchName)
+		$diffBranch.PatchContextLines = $patchContextLines
+		$diffBranch.NoMergesInHistory = $noMergesInHistory
 
-		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName)
+		[System.IO.FileInfo]$archiveFile = $diffBranch.CreateDiffsZip($outputDirectory, $archiveFileName, $versionedName)
 
 		if($null -eq $archiveFile)
 		{
@@ -2377,6 +2469,12 @@ class GitTool {
 		return [System.DateTimeOffset]::Parse($commitDateRaw)
 	}
 
+	static [string] GetBuildVersion([System.DateTimeOffset]$dt)
+	{
+		[int]$quarter = [System.Math]::Ceiling($dt.Month / 3.0)
+		return "$($dt.Year).$quarter.$($dt.ToString('MMdd')).$($dt.ToString('HHmm'))"
+	}
+
 	static [bool] IsPossibleCommitHash([string]$branchOrHash) {
 	        # The regex checks for a string that is between 4 and 40 characters long,
 	        # contains only hexadecimal characters (0-9, a-f)
@@ -2451,11 +2549,13 @@ class GitTool {
 
 	# Returns structured commits for the given range (e.g. "A..B", "HEAD", a branch name).
 	# $limit of 0 or less means "no limit". $paths is an optional path filter.
-	static [GitLogEntry[]] GetLog([string]$range, [int]$limit, [string[]]$paths) {
+	# $noMergesInHistory when $true passes --no-merges to suppress merge commits.
+	static [GitLogEntry[]] GetLog([string]$range, [int]$limit, [string[]]$paths, [bool]$noMergesInHistory) {
 		if([string]::IsNullOrWhiteSpace($range)) { return @() }
 		[System.Collections.Generic.List[string]]$gitArgs = [System.Collections.Generic.List[string]]::new()
 		$gitArgs.Add("--no-pager")
 		$gitArgs.Add("log")
+		if($noMergesInHistory) { $gitArgs.Add("--no-merges") }
 		$gitArgs.Add("--format=" + [GitLogEntry]::GetLogFormat())
 		if($limit -gt 0) { $gitArgs.Add("-n"); $gitArgs.Add("$limit") }
 		$gitArgs.Add($range)
@@ -2465,17 +2565,21 @@ class GitTool {
 		}
 		[string[]]$lines = @(git @gitArgs 2>$null)
 		if($LASTEXITCODE -ne 0) { return @() }
+		# Join all output and split on RecordSeparator so multi-line %b bodies parse correctly.
+		[string]$allText = [string]::Join([System.Environment]::NewLine, $lines)
+		[string[]]$records = $allText.Split([GitLogEntry]::RecordSeparator)
 		[System.Collections.Generic.List[GitLogEntry]]$entries = [System.Collections.Generic.List[GitLogEntry]]::new()
-		foreach($line in $lines) {
-			[GitLogEntry]$e = [GitLogEntry]::Parse($line)
+		foreach($record in $records) {
+			[GitLogEntry]$e = [GitLogEntry]::Parse($record)
 			if($null -ne $e) { $entries.Add($e) }
 		}
 		return $entries.ToArray()
 	}
 
 	# Convenience overloads.
-	static [GitLogEntry[]] GetLog([string]$range) { return [GitTool]::GetLog($range, 0, $null) }
-	static [GitLogEntry[]] GetLog([string]$range, [int]$limit) { return [GitTool]::GetLog($range, $limit, $null) }
+	static [GitLogEntry[]] GetLog([string]$range) { return [GitTool]::GetLog($range, 0, $null, $false) }
+	static [GitLogEntry[]] GetLog([string]$range, [int]$limit) { return [GitTool]::GetLog($range, $limit, $null, $false) }
+	static [GitLogEntry[]] GetLog([string]$range, [int]$limit, [string[]]$paths) { return [GitTool]::GetLog($range, $limit, $paths, $false) }
 
 	# Returns [GitDiff] entries for the files touched by a single commit,
 	# relative to its first parent. Root commits (no parent) return every
@@ -3007,7 +3111,7 @@ if($workingTree) {
 	Write-Host "  Found $($dirty.Length) uncommitted change(s) in working tree." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
 	[GitBranch]$rightBranchObj = [GitBranch]::ForWorkTree()
-	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName, $versionedName.IsPresent, $patchContextLines, $noMergesInHistory.IsPresent)
 }
 elseif($staged) {
 	[GitStatusEntry[]]$status = [GitTool]::GetStatus()
@@ -3022,13 +3126,13 @@ elseif($staged) {
 	Write-Host "  Found $($stagedEntries.Length) staged change(s)." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
 	[GitBranch]$rightBranchObj = [GitBranch]::ForStaged()
-	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranchObj, $rightBranchObj, $outputDirectory, $archiveFileName, $versionedName.IsPresent, $patchContextLines, $noMergesInHistory.IsPresent)
 }
 elseif($threeWay) {
-	$archiveFile = [GitTool]::ArchiveBranchDiffsThreeWay($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffsThreeWay($leftBranch, $rightBranch, $outputDirectory, $archiveFileName, $versionedName.IsPresent, $patchContextLines, $noMergesInHistory.IsPresent)
 }
 else {
-	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName)
+	$archiveFile = [GitTool]::ArchiveBranchDiffs($leftBranch, $rightBranch, $outputDirectory, $archiveFileName, $versionedName.IsPresent, $patchContextLines, $noMergesInHistory.IsPresent)
 }
 
 $script:stopwatch.Stop()
