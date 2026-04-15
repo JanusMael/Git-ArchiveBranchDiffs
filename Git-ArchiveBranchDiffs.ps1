@@ -2027,8 +2027,8 @@ class GitLogEntry {
 		if(-not [System.DateTimeOffset]::TryParse($parts[4], [ref]$dto)) {
 			$dto = [System.DateTimeOffset]::MinValue
 		}
-		[string]$body = if($parts.Length -ge 7) { $parts[6].Trim() } else { "" }
-		return [GitLogEntry]::new($parts[0], $parts[1], $parts[2], $parts[3], $dto, $parts[5], $body)
+		[string]$commitBody = if($parts.Length -ge 7) { $parts[6].Trim() } else { "" }
+		return [GitLogEntry]::new($parts[0], $parts[1], $parts[2], $parts[3], $dto, $parts[5], $commitBody)
 	}
 
 	[string] ToString() {
