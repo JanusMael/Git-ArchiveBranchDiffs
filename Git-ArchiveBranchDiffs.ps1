@@ -110,8 +110,16 @@ Param (
 	[int]$patchContextLines = 5,
 
 	[parameter(Mandatory=$false)]
-	[switch]$noMergesInHistory
+	[switch]$noMergesInHistory,
+
+	[parameter(Mandatory=$false)]
+	[switch]$Version
 )
+
+if ($Version) {
+    Write-Output "Git-ArchiveBranchDiffs 1.1.x"
+    exit 0
+}
 
 Set-StrictMode -Version Latest
 
@@ -132,6 +140,123 @@ Function Write-Fail {
     [string]$message = $args -join ' '
     Write-Host $message -ForegroundColor Red -BackgroundColor Black
     throw $message
+}
+
+Function Get-ReconstructedCommand {
+    <#
+    .SYNOPSIS
+    Builds the full non-interactive command line that reproduces this run.
+
+    Returns the string so callers can test, log, or inject it into shell history.
+    -versionedName is always included so re-running the command from history generates
+    a new timestamped archive name rather than overwriting the previous run's output.
+
+    All inputs are explicit parameters so that the function is independently testable
+    without relying on the caller's scope chain.  Add-ReconstructedCommandToHistory
+    supplies the live script-scope values automatically.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)][string]$InvocationName,
+        [string]$RepositoryPath       = $repositoryPath,
+        [string]$LeftBranch           = $leftBranch,
+        [string]$RightBranch          = $rightBranch,
+        [string]$OutputDirectory      = $outputDirectory,
+        [bool]$WorkingTree            = $workingTree,
+        [bool]$Staged                 = $staged,
+        [bool]$ThreeWay               = $threeWay,
+        [bool]$NonInteractive         = $nonInteractive,
+        [bool]$NoMergesInHistory      = $noMergesInHistory,
+        [string]$ArchiveFileName      = $archiveFileName,
+        [int]$PatchContextLines       = $patchContextLines
+    )
+
+    [System.Collections.Generic.List[string]]$parts = [System.Collections.Generic.List[string]]::new()
+    $parts.Add($InvocationName)
+
+    # Always include the resolved inputs — these are the values that matter for a re-run
+    $parts.Add("-repositoryPath '$RepositoryPath'")
+    $parts.Add("-leftBranch '$LeftBranch'")
+
+    if (-not $WorkingTree -and -not $Staged -and -not [string]::IsNullOrWhiteSpace($RightBranch)) {
+        $parts.Add("-rightBranch '$RightBranch'")
+    }
+    $parts.Add("-outputDirectory '$OutputDirectory'")
+
+    # Switches — only emitted when set, so the command stays readable
+    if ($WorkingTree)      { $parts.Add("-workingTree") }
+    if ($Staged)           { $parts.Add("-staged") }
+    if ($ThreeWay)         { $parts.Add("-threeWay") }
+    if ($NonInteractive)   { $parts.Add("-nonInteractive") }
+    if ($NoMergesInHistory){ $parts.Add("-noMergesInHistory") }
+
+    # -versionedName is always injected regardless of whether it was set interactively.
+    # This ensures re-running the command from history generates a new timestamped archive
+    # name instead of overwriting the previous run's output file.
+    $parts.Add("-versionedName")
+
+    # Non-default option values
+    if (-not [string]::IsNullOrWhiteSpace($ArchiveFileName)) {
+        $parts.Add("-archiveFileName '$ArchiveFileName'")
+    }
+    if ($PatchContextLines -ne 5) {
+        $parts.Add("-patchContextLines $PatchContextLines")
+    }
+
+    return $parts -join ' '
+}
+
+Function Add-ReconstructedCommandToHistory {
+    <#
+    .SYNOPSIS
+    Injects the full parameterised equivalent of this interactive run into PSReadLine history.
+    After the script exits, pressing UP arrow shows the complete non-interactive command line
+    that would reproduce the same run — all resolved inputs included.
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true)]
+        [string]$InvocationName
+    )
+
+    # Pass all script-scope param values explicitly so Get-ReconstructedCommand is testable
+    # without depending on the scope chain.
+    [string]$reconstructed = Get-ReconstructedCommand `
+        -InvocationName    $InvocationName `
+        -RepositoryPath    $repositoryPath `
+        -LeftBranch        $leftBranch `
+        -RightBranch       $rightBranch `
+        -OutputDirectory   $outputDirectory `
+        -WorkingTree       $workingTree.IsPresent `
+        -Staged            $staged.IsPresent `
+        -ThreeWay          $threeWay.IsPresent `
+        -NonInteractive    $nonInteractive.IsPresent `
+        -NoMergesInHistory $noMergesInHistory.IsPresent `
+        -ArchiveFileName   $archiveFileName `
+        -PatchContextLines $patchContextLines
+
+    try {
+        $psrlOptions = Get-PSReadLineOption
+
+        # In-process: makes the entry appear on the very next UP arrow press in this session
+        # (covers the normal interactive terminal and the VSCode Integrated Console).
+        [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory($reconstructed)
+
+        # Cross-terminal / future-session persistence: write the entry directly to the
+        # history file so that other already-open terminals and new sessions find it.
+        #
+        # With SaveIncrementally (the default) AddToHistory already flushed the entry to
+        # the file, so we skip the manual write to avoid a duplicate line.
+        # With SaveAtExit or SaveNothing it did not write yet, so we do it here.
+        [string]$historyFile = $psrlOptions.HistorySavePath
+        if ($psrlOptions.HistorySaveStyle -ne [Microsoft.PowerShell.HistorySaveStyle]::SaveIncrementally -and
+            -not [string]::IsNullOrWhiteSpace($historyFile)) {
+            Add-Content -Path $historyFile -Value $reconstructed -Encoding UTF8
+        }
+    } catch {
+        # PSReadLine not loaded (non-interactive / VSCode debug host / CI) — silent no-op
+    }
 }
 
 Function Read-Prompt {
@@ -3083,8 +3208,9 @@ if(-not $workingTree -and -not $staged) {
 			Write-Host ""
 			Write-Host "  Left and right refer to the same commit — nothing to compare." -ForegroundColor Yellow
 			Write-Host ""
+			Write-Output (ConvertTo-Json @{ errorCode = "SameCommit"; message = "Left and right refer to the same commit — nothing to compare." } -Compress)
 			Pop-Location
-			return
+			exit 12
 		}
 		if([GitTool]::IsAncestor($leftHashPre, $rightHashPre)) {
 			Write-Host "  '$leftBranch' is an ancestor of '$rightBranch'." -ForegroundColor Gray
@@ -3105,8 +3231,9 @@ if($workingTree) {
 		Write-Host ""
 		Write-Host "  Working tree is clean — nothing to archive." -ForegroundColor Yellow
 		Write-Host ""
+		Write-Output (ConvertTo-Json @{ errorCode = "CleanWorktree"; message = "Working tree is clean — no uncommitted changes to archive." } -Compress)
 		Pop-Location
-		return
+		exit 10
 	}
 	Write-Host "  Found $($dirty.Length) uncommitted change(s) in working tree." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
@@ -3120,8 +3247,9 @@ elseif($staged) {
 		Write-Host ""
 		Write-Host "  Index is empty — nothing to archive." -ForegroundColor Yellow
 		Write-Host ""
+		Write-Output (ConvertTo-Json @{ errorCode = "EmptyIndex"; message = "Index is empty — no staged changes to archive." } -Compress)
 		Pop-Location
-		return
+		exit 11
 	}
 	Write-Host "  Found $($stagedEntries.Length) staged change(s)." -ForegroundColor Gray
 	[GitBranch]$leftBranchObj = [GitBranch]::new($leftBranch)
@@ -3184,6 +3312,18 @@ else
 	Write-Host ""
 }
 #endregion Summary
+
+# Prefer the literal text the user typed (e.g. ".\Git-ArchiveBranchDiffs.ps1").
+# Fall back to a relative path when InvocationName is "." (dot-sourced) or empty.
+# Resolve-Path -Relative computes relative to the current directory; it throws when the
+# script is on a different drive, in which case the absolute path is used as a safe fallback.
+[string]$scriptInvocation = if (-not [string]::IsNullOrWhiteSpace($MyInvocation.InvocationName) -and $MyInvocation.InvocationName -ne '.') {
+    $MyInvocation.InvocationName
+} else {
+    try { Resolve-Path -Relative $PSCommandPath }
+    catch { $PSCommandPath }
+}
+Add-ReconstructedCommandToHistory -InvocationName $scriptInvocation
 
 }
 finally {
